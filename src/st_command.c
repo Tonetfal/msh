@@ -60,15 +60,13 @@ char *form_command_string(const st_token_item *head, const st_token_item *tail)
 		tokens_len = st_token_range_str_length(head, tail),
 		token_c = st_token_range_item_count(head, tail, NULL),
 		totlen = tokens_len + token_c;
-		/* token_c = amount of spaces and terminating zero */
-	str = (char *) malloc(totlen);
+	str = (char *) malloc(totlen + 1);
 #ifdef DEBUG
 	fprintf(stderr, "form_command_string() - tokens_len %lu token_c %lu " \
 		"totlen %lu\n", tokens_len, token_c, totlen);
 #endif
 	for (; head != tail->next; head = head->next)
 		len += sprintf(str + len, "%s ", head->str);
-		/* -1 because sprintf writes terminating zero at the end*/
 	str[totlen - 1] = '\0';
 #ifdef DEBUG
 	fprintf(stderr, "form_command_string() - Formed string [%s]\n", str);
@@ -155,7 +153,7 @@ void on_token_handle(const st_token_item *token, char ***argv, st_command *cmd)
 	{
 		case program:
 		case arg:
-			str = (char *) malloc(strlen(token->str));
+			str = (char *) malloc(strlen(token->str) + 1);
 			strcpy(str, token->str);
 			**argv = str;
 			(*argv)++;

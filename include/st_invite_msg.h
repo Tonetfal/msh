@@ -9,6 +9,7 @@ typedef struct
 	char *post_path_text;
 } st_invite_msg;
 
+st_invite_msg *st_invite_msg_create_empty();
 st_invite_msg *st_invite_msg_form(st_invite_msg **msg);
 void st_invite_msg_print(const st_invite_msg *msg);
 

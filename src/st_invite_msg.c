@@ -83,10 +83,20 @@ void append_abs_path_text(st_invite_msg *msg)
 	msg->abs_path = cwd;
 }
 
+st_invite_msg *st_invite_msg_create_empty()
+{
+	st_invite_msg *msg = (st_invite_msg *) malloc(sizeof(st_invite_msg));
+	msg->user = NULL;
+	msg->post_user_text = NULL;
+	msg->abs_path = NULL;
+	msg->post_path_text = NULL;
+	return msg;
+}
+
 st_invite_msg *st_invite_msg_form(st_invite_msg **msg)
 {
 	if (!(*msg))
-		*msg = (st_invite_msg *) malloc(sizeof(st_invite_msg));
+		*msg = st_invite_msg_create_empty();
 	if (!(*msg)->user)
 		append_user_text(*msg);
 	if (!(*msg)->post_user_text)

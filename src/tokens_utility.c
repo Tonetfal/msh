@@ -70,7 +70,7 @@ char *read_token(const char *str, char *last_ch, size_t *read_bytes,
 	}
 
 	buf[i] = '\0';
-	token = (char *) malloc(i);
+	token = (char *) malloc(i + 1);
 	strcpy(token, buf);
 #ifdef DEBUG
 	fprintf(stderr, "--------read_token() end token [%s] last_ch [%c] " \
@@ -209,14 +209,12 @@ void analyze_redirector(const char *str, int *fd, int *app, void *dir_v)
 void setup_redirector(st_token_item *item)
 {
 	char *redir_arg;
-	size_t len;
 	st_redirector *redir = st_redirector_create_empty();
 
 	/* use 'if' instead of 'assert' because syntax control is not yet done */
 	if (item->next)
 	{
-		len = strlen(item->next->str);
-		redir_arg = (char *) malloc(len);
+		redir_arg = (char *) malloc(strlen(item->next->str) + 1);
 		redir->path = strcpy(redir_arg, item->next->str);
 	}
 	analyze_redirector(item->str, &redir->fd, &redir->app, &redir->dir);
@@ -314,7 +312,7 @@ int check_reserved_tokens(const st_token_item *head)
 
 int check_redirector_tokens(const st_token_item *head)
 {
-	int flags, fd, last_type = -1;
+	int flags = 0, fd, last_type = -1;
 	st_redirector *redir;
 	for (; head; head = head->next)
 	{
