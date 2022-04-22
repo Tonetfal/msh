@@ -39,15 +39,19 @@ int main()
 		tokens = form_token_list(str);
 		if (tokens)
 		{
-			remove_quotes(&tokens);
-			unify_multiple_tokens(tokens);
-			analyze_token_types(tokens);
-			res = check_syntax(tokens);
-			HANDLE_ERROR(res, NULL, tokens);
 #ifdef DEBUG
 			printf("Tokens - ");
 			st_token_item_print(tokens);
 #endif
+			remove_quotes(&tokens);
+			unify_multiple_tokens(tokens);
+#ifdef DEBUG
+			printf("Tokens - ");
+			st_token_item_print(tokens);
+#endif
+			analyze_token_types(tokens);
+			res = check_syntax(tokens);
+			HANDLE_ERROR(res, NULL, tokens);
 
 			cmds = st_commands_create(tokens);
 #ifdef DEBUG

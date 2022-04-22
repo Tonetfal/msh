@@ -10,7 +10,7 @@ char *read_string(char *buf, const size_t size)
 {
 	char *res;
 	errno = 0;
-	res= fgets(buf, size - 1, stdin);
+	res = fgets(buf, size - 1, stdin);
 	if (!res)
 	{
 		if (errno == 0)
@@ -33,6 +33,12 @@ void mt_perror(const char *str)
 		fputs("Mismathicng quotes.\n", stderr);
 	else if (mt_errno == SC_MSRTK)
 		fprintf(stderr, "Mismatching reserved tokens. %s\n", mt_errstr);
+	else if (mt_errno == SC_MSRDT)
+		fprintf(stderr, "Mismatching redirector tokens. %s\n", mt_errstr);
+	else if (mt_errno == SC_MSREP)
+		fprintf(stderr, "Missing redirector path. %s\n", mt_errstr);
+	else if (mt_errno == SC_USPFD)
+		fprintf(stderr, "Unsupported file descriptor. %s\n", mt_errstr);
 	else
 		fprintf(stderr, "Unknown error code - %d.\n", mt_errno);
 }

@@ -1,5 +1,7 @@
 #include "st_token_item.h"
+#include "st_redirector.h"
 
+#include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -7,9 +9,11 @@
 st_token_item *st_token_item_create_empty()
 {
 	static size_t id = 0ul;
-	st_token_item *node = (st_token_item*) malloc(sizeof(st_token_item));
+	st_token_item *node = (st_token_item *) malloc(sizeof(st_token_item));
+	node->type = tk_unk;
 	node->id = id;
 	node->str = NULL;
+	node->redir = NULL;
 	node->next = NULL;
 	id++;
 	return node;
@@ -33,6 +37,8 @@ void st_token_item_delete(st_token_item *item)
 		return;
 	if (item->str)
 		free(item->str);
+	if (item->redir)
+		st_redirector_delete(item->redir);
 	free(item);
 }
 
@@ -75,11 +81,8 @@ int st_token_item_remove(st_token_item **head, st_token_item *item)
 void st_token_item_print(const st_token_item *head)
 {
 	int empty = head == NULL;
-	while (head)
-	{
+	for (; head; head = head->next)
 		printf("[%s] ", head->str);
-		head = head->next;
-	}
 	if (!empty)
 		putchar(10);
 }
@@ -99,36 +102,53 @@ void st_token_item_clear(st_token_item *head)
 size_t st_token_item_size(const st_token_item *head)
 {
 	size_t i = 0ul;
-	while (head)
-	{
-		head = head->next;
+	for (; head; head = head->next)
 		i++;
-	}
 	return i;
 }
 
 size_t st_token_item_count(const st_token_item *head,
 	int (*callback)(const st_token_item *))
 {
-	size_t count = 0ul;
-	while (head)
-	{
-		if ((callback)(head))
-			count++;
-		head = head->next;
-	}
-	return count;
+	return st_token_range_item_count(head, NULL, callback);
 }
 
 size_t st_token_range_item_count(const st_token_item *head,
 	const st_token_item *tail,	int (*callback)(const st_token_item *))
 {
+#define FOR_BODY \
+	do { \
+		if (!callback || (callback)(head)) \
+			count++; \
+	} while(0);
+
 	size_t count = 0ul;
-	while (tail->next != head)
-	{
-		if ((callback)(head))
-			count++;
-		head = head->next;
-	}
+	assert(head);
+	if (!tail)
+		for (; head; head = head->next)
+			FOR_BODY
+	else
+		for (; head != tail->next; head = head->next)
+			FOR_BODY
+
 	return count;
+#undef FOR_BODY
+}
+
+size_t st_token_range_str_length(const st_token_item *head,
+	const st_token_item *tail)
+{
+#define FOR_BODY len += strlen(head->str);
+
+	size_t len = 0ul;
+	assert(head);
+	if (!tail)
+		for (; head; head = head->next)
+			FOR_BODY
+	else
+		for (; head != tail->next; head = head->next)
+			FOR_BODY
+
+	return len;
+#undef FOR_BODY
 }

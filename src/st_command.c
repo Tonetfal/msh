@@ -1,4 +1,4 @@
-/* C89 support of new features */
+/* C89 support */
 #define _XOPEN_SOURCE 500 /* snprintf */
 #define _DEFAULT_SOURCE /* wait4 */
 
@@ -10,6 +10,7 @@
 #include "utility.h"
 
 #include <assert.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -18,32 +19,12 @@
 
 st_command *cmds_head = NULL;
 
-int is_token_arg(const st_token_item *item)
-{
-	return item->type == arg;
-}
-
-int is_token_not_arg(const st_token_item *item)
-{
-	return item->type != arg;
-}
-
-int is_command_terminator(const st_token_item *item)
-{
-	char *str = item->str;
-	return
-		strcmp(str, ";") == 0 ||
-		strcmp(str, "&") == 0 ||
-		strcmp(str, "&&") == 0 ||
-		strcmp(str, "||") == 0;
-}
-
 size_t count_command_tokens(const st_token_item *head)
 {
 	size_t i = 0ul;
 	for (; head; head = head->next, i++)
 	{
-		if (is_command_terminator(head))
+		if (is_terminator_token(head))
 			break;
 	}
 	if (head)
@@ -57,32 +38,68 @@ const st_token_item *find_command_tail(const st_token_item *head)
 	return head;
 }
 
-void on_identify(const st_token_item *token, char ***argv, st_command *cmd)
+size_t count_redirectors(const st_command *cmd)
+{
+	size_t count = 0ul, i = 0ul;
+	st_redirector **redir = cmd->file_redirectors;
+#ifdef DEBUG
+	fprintf(stderr, "--------count_redirectors() - start\n");
+#endif
+	for (; redir[i]; i++)
+		count++;
+#ifdef DEBUG
+	fprintf(stderr, "--------count_redirectors() - end count %lu\n", count);
+#endif
+	return count;
+}
+
+char *form_command_string(const st_token_item *head, const st_token_item *tail)
 {
 	char *str;
-	switch (token->type)
-	{
-		case arg:
-			str = (char *) malloc(strlen(token->str));
-			strcpy(str, token->str);
-			**argv = str;
-			(*argv)++;
-			break;
-		case bg_process:
-			cmd->is_bg_process = 1;
-			break;
-		case separator:
-			/* do nothing */
-			break;
-		/* TO IMPLEMENT */
-		/* case or_op: */
-		/* 	break; */
-		/* case and_op: */
-		/* 	break; */
-		default:
-			fprintf(stderr, "A non implemented token has been passed - " \
-				"String: [%s] Type: [%d]\n", token->str, token->type);
-	}
+	size_t len = 0ul,
+		tokens_len = st_token_range_str_length(head, tail),
+		token_c = st_token_range_item_count(head, tail, NULL),
+		totlen = tokens_len + token_c;
+		/* token_c = amount of spaces and terminating zero */
+	str = (char *) malloc(totlen);
+#ifdef DEBUG
+	fprintf(stderr, "form_command_string() - tokens_len %lu token_c %lu " \
+		"totlen %lu\n", tokens_len, token_c, totlen);
+#endif
+	for (; head != tail->next; head = head->next)
+		len += sprintf(str + len, "%s ", head->str);
+		/* -1 because sprintf writes terminating zero at the end*/
+	str[totlen - 1] = '\0';
+#ifdef DEBUG
+	fprintf(stderr, "form_command_string() - Formed string [%s]\n", str);
+#endif
+	return str;
+}
+
+void allocate_arguments_memory(const st_token_item *head,
+	const st_token_item *tail, int *argc, char ***argv)
+{
+	*argc = (int) st_token_range_item_count(head, tail, &is_token_arg);
+	*argv = (char **) malloc((*argc + 1) * sizeof(char *));
+#ifdef DEBUG
+	fprintf(stderr, "allocate_arguments_memory() - argc %i allocated bytes " \
+		"%lu\n", *argc, (*argc + 1) * sizeof(char *));
+#endif
+}
+
+void allocate_redirectors_memory(const st_token_item *head,
+	const st_token_item *tail, st_command *cmd)
+{
+	size_t i, redir_c = st_token_range_item_count(head, tail,
+		&is_token_redirector);
+	cmd->file_redirectors = (st_file_redirector **) malloc(
+		(redir_c + 1) * sizeof(st_file_redirector *));
+	for (i = 0ul; i < redir_c + 1; i++)
+		cmd->file_redirectors[i] = NULL;
+#ifdef DEBUG
+	fprintf(stderr, "allocate_redirectors_memory() - redir_c %lu allocated " \
+		"bytes %lu\n", redir_c, (redir_c + 1) * sizeof(st_file_redirector *));
+#endif
 }
 
 size_t count_commands(const st_token_item *head)
@@ -99,52 +116,74 @@ size_t count_commands(const st_token_item *head)
 		count += is_token_arg(head);
 		/* if after last special token there is an arg add 1 */
 	}
+#ifdef DEBUG
+	fprintf(stderr, "count_commands() - count %lu\n", count);
+#endif
 
 	return count;
 }
 
-char *form_command_string(const st_command *cmd)
+void handle_command_redirector(const st_token_item *token, st_command *cmd)
 {
-	int i = 0, argc = cmd->argc;
-	char *str, **argv = cmd->argv;
-
-	size_t len = 0ul, totlen = get_argv_total_length(argc, argv) + argc;
-	str = (char *) malloc(totlen);
+	size_t redir_c = count_redirectors(cmd);
+	st_redirector *redir = token->redir;
+	assert(is_token_redirector(token));
+	assert(token->next);
 #ifdef DEBUG
-	fprintf(stderr, "form_command_string() - argc %d totlen %lu\n",
-		argc, totlen);
+	fprintf(stderr, "handle_command_redirector() - start redir_c %lu\n",
+		redir_c);
+	fprintf(stderr, "handle_command_redirector() - A new file redirector " \
+		"has been added to a command \n\t path [%s] fd %d app %d dir %d\n",
+		redir->path, redir->fd, redir->app, redir->dir);
 #endif
-	for (; i < argc; i++)
-		len += sprintf(str + len, "%s ", argv[i]);
-	str[totlen - 1] = '\0';
-#ifdef DEBUG
-	fprintf(stderr, "form_command_string() - Formed string [%s]\n", str);
-#endif
-	return str;
-}
 
-void command_compute_arguments(const st_token_item *head,
-	const st_token_item *tail, int *argc, char ***argv)
-{
-	*argc = (int) st_token_range_item_count(head, tail, &is_token_arg);
-	*argv = (char **) malloc((*argc + 1) * sizeof(char *));
+	cmd->file_redirectors[redir_c] = redir;
+	cmd->file_redirectors[redir_c + 1] = NULL; /* terminating null */
 #ifdef DEBUG
-	fprintf(stderr, "command_compute_arguments() - argc %i allocated bytes " \
-		"%lu\n", *argc, (*argc + 1) * sizeof(char *));
+	fprintf(stderr, "handle_command_redirector() - end\n");
 #endif
 }
 
-void command_identify_arguments(const st_token_item *head,
+void on_token_handle(const st_token_item *token, char ***argv, st_command *cmd)
+{
+	char *str;
+#ifdef DEBUG
+	fprintf(stderr, "on_token_handle() - start token - [%s] type - [%d]\n",
+		token->str, token->type);
+#endif
+	switch (token->type)
+	{
+		case program:
+		case arg:
+			str = (char *) malloc(strlen(token->str));
+			strcpy(str, token->str);
+			**argv = str;
+			(*argv)++;
+			break;
+		case bg_process:
+			cmd->is_bg_process = 1;
+			break;
+		case separator:
+		case redirector_path: /* is handled by file_redirector case */
+			/* do nothing */
+			break;
+		case file_redirector:
+			handle_command_redirector(token, cmd);
+			break;
+		default:
+			fprintf(stderr, "A non implemented token has been passed - " \
+				"String: [%s] Type: [%d]\n", token->str, token->type);
+	}
+#ifdef DEBUG
+	fprintf(stderr, "on_token_handle() - end\n");
+#endif
+}
+
+void handle_command_tokens(const st_token_item *head,
 	const st_token_item *tail, st_command *cmd, char **argv)
 {
-	while (tail->next != head)
-	{
-#ifdef DEBUG
-		fprintf(stderr, "command_identify_arguments() - [%s]\n", head->str);
-#endif
-		on_identify(head, &argv, cmd);
-		head = head->next;
-	}
+	for (; tail->next != head; head = head->next)
+		on_token_handle(head, &argv, cmd);
 }
 
 st_command *st_command_create_empty()
@@ -154,6 +193,7 @@ st_command *st_command_create_empty()
 	cmd->argc = 0;
 	cmd->argv = NULL;
 	cmd->is_bg_process = 0;
+	cmd->file_redirectors = NULL;
 	cmd->pid = -1;
 	cmd->eid = -1;
 	cmd->next = NULL;
@@ -169,13 +209,14 @@ st_command *st_command_create(const st_token_item *head)
 	if (!head)
 		return cmd;
 
-	command_compute_arguments(head, tail, &argc, &argv);
-	command_identify_arguments(head, tail, cmd, argv);
+	allocate_arguments_memory(head, tail, &argc, &argv);
+	allocate_redirectors_memory(head, tail, cmd);
+	handle_command_tokens(head, tail, cmd, argv);
 
 	argv[argc] = NULL;
 	cmd->argc = argc;
 	cmd->argv = argv;
-	cmd->cmd_str = form_command_string(cmd);
+	cmd->cmd_str = form_command_string(head, tail);
 
 #ifdef DEBUG
 	fputs("st_command_create() - New command has been created\n", stderr);
@@ -222,15 +263,33 @@ st_command **st_commands_create(const st_token_item *head)
 void st_command_print(const st_command *cmd)
 {
 	size_t i;
-	printf("cmd_str [%s]\n", cmd->cmd_str);
-	printf("argc: %d\n", cmd->argc);
-	printf("argv: [ ");
+	st_file_redirector **redir = cmd->file_redirectors;
+	printf("\tcmd_str: [%s]\n", cmd->cmd_str);
+	printf("\targc: %d\n", cmd->argc);
+
+	printf("\targv: [ \n");
 	for (i = 0ul; cmd->argv[i]; i++)
-		printf("[%s] ", cmd->argv[i]);
-	printf("[%s] ]\n", cmd->argv[i]);
-	printf("is_bg_process: %d\n", cmd->is_bg_process);
-	printf("pid: [%d]\n", cmd->pid);
-	printf("eid: [%d]\n", cmd->eid);
+		printf("\t\t[%s], \n", cmd->argv[i]);
+	printf("\t\t[%s]\n\t]\n", cmd->argv[i]);
+
+	printf("\tis_bg_process: [%d]\n", cmd->is_bg_process);
+	printf("\tpid: [%d]\n", cmd->pid);
+	printf("\teid: [%d]\n", cmd->eid);
+
+	printf("\tfile_redirectors: [ \n");
+	for (i = 0ul; redir[i]; i++)
+	{
+		printf("\t\t[");
+		st_redirector_print(redir[i]);
+		printf("],\n");
+	}
+	printf("\t\t%p\n\t]\n", (void *) redir[i]);
+}
+
+void st_redirectors_delete(st_redirector **redirectors)
+{
+	for (; *redirectors; redirectors++)
+		st_redirector_delete(*redirectors);
 }
 
 void st_command_delete(st_command *cmd)
@@ -239,6 +298,11 @@ void st_command_delete(st_command *cmd)
 		return;
 	if (cmd->argv)
 		free(cmd->argv);
+	if (cmd->file_redirectors)
+	{
+		st_redirectors_delete(cmd->file_redirectors);
+		free(cmd->file_redirectors);
+	}
 	free(cmd);
 }
 
@@ -322,6 +386,35 @@ void handle_cd(const st_command *cmd)
 		perror("Failed to change directory");
 }
 
+int redirect_streams(st_command *cmd)
+{
+	int fd;
+	size_t i;
+	st_redirector **redic = cmd->file_redirectors;
+	for (i = 0ul; redic[i]; i++)
+	{
+#ifdef DEBUG
+		fprintf(stderr, "redirect_streams() - new iteration. redirector: ");
+		st_redirector_print(redic[i]);
+		putchar(10);
+#endif
+		fd = open(redic[i]->path,
+			(redic[i]->dir == rd_out ? O_WRONLY : O_RDONLY) |
+			(O_CREAT) |
+			(redic[i]->app ? O_APPEND : redic[i]->dir == rd_in ? 0 : O_TRUNC),
+			0666);
+		if (fd == -1)
+		{
+			fprintf(stderr, "redirect_streams(%s): ", redic[i]->path);
+			perror("");
+			return 0;
+		}
+		/* redirect a stream */
+		dup2(fd, redic[i]->fd);
+	}
+	return 1;
+}
+
 pid_t call_command(st_command *cmd)
 {
 	char prg[256];
@@ -334,6 +427,8 @@ pid_t call_command(st_command *cmd)
 	if (pid == 0)
 	{
 		cmd->pid = pid;
+		if (!redirect_streams(cmd))
+			return pid;
 		strcpy(prg, cmd->argv[0]);
 		execvp(prg, cmd->argv);
 		perror(prg);
@@ -346,7 +441,11 @@ pid_t handle_process(st_command *cmd)
 {
 	int status;
 	eid_t eid = acquire_eid();
-	pid_t pid = call_command(cmd);
+	pid_t pid;
+#ifdef DEBUG
+	fprintf(stderr, "--------handle_process() - start cmd [%s]\n", cmd->cmd_str);
+#endif
+	pid = call_command(cmd);
 
 	cmd->pid = pid;
 	cmd->eid = eid;
@@ -358,6 +457,9 @@ pid_t handle_process(st_command *cmd)
 	else
 		st_command_push_back(&cmds_head, cmd);
 
+#ifdef DEBUG
+	fprintf(stderr, "--------handle_process() - end\n");
+#endif
 	return pid;
 }
 
@@ -421,13 +523,6 @@ pid_t execute_command(st_command *cmd)
 	return pid;
 }
 
-void print_terminate_message(const st_command *cmd)
-{
-	printf("msh: Job %d, '", cmd->eid);
-	print_argv(cmd->argv);
-	printf("' has ended\n");
-}
-
 void check_zombies()
 {
 	int status;
@@ -440,14 +535,17 @@ void check_zombies()
 		assert(cmd);
 
 		get_exec_result(buf, sizeof(buf), status);
-		print_terminate_message(cmd);
+
+		printf("msh: Job %d, '", cmd->eid);
+		print_argv(cmd->argv);
+		printf("' has ended\n");
 
 		status = st_command_erase_item(&cmds_head, cmd);
 #ifdef DEBUG
-		fprintf(stderr, "A command has ");
+		puts("A command has ");
 		if (!status)
-			fprintf(stderr, "not ");
-		fprintf(stderr, "been erased from the list.\n");
+			puts("not");
+		puts("been erased from the list.\n");
 #endif
 	}
 }

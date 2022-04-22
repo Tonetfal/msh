@@ -2,6 +2,7 @@
 #define ST_COMMAND_H
 
 #include "eid.h"
+#include "st_redirector.h"
 
 #include <sys/types.h>
 
@@ -16,21 +17,11 @@
 	(the strings).
 	Once an asynchronous command has been executed in execute_command it'll be
 	stored into the main list that's completely managed by st_command module.
-	List's elements are erased only when corresponding PID is returned by
-	wait4 in check_zombies.
+	List elements are erased only when corresponding PID is returned by wait4
+	in check_zombies function.
 */
 
 struct st_token_item;
-
-typedef struct
-{
-	char *dest;
-	int fd;
-} st_redirection;
-
-/* They'll be treated in similar, though different, ways */
-typedef st_redirection st_file_redirection;
-typedef st_redirection st_process_redirection;
 
 typedef struct st_command
 {
@@ -38,9 +29,9 @@ typedef struct st_command
 	int argc;
 	char **argv;
 	int is_bg_process;
+	st_file_redirector **file_redirectors;
 	/* TO IMPLEMENT */
-	/* st_file_redirection **file_redirections */
-	/* st_process_redirection **process_redirections */
+	/* st_process_redirector **process_redirectors; */
 
 	pid_t pid;
 	eid_t eid;

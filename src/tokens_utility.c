@@ -3,6 +3,7 @@
 #include "utility.h"
 #include "mt_errno.h"
 
+#include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -30,6 +31,11 @@ char *read_token(const char *str, char *last_ch, size_t *read_bytes,
 	size_t i;
 	char *token, buf[4096];
 	int backslash = 0;
+#ifdef DEBUG
+	fprintf(stderr, "--------read_token() start str [%s] last_ch [%c] " \
+		"read_bytes [%lu] inside_quotes [%d]\n", str, *last_ch, *read_bytes,
+		*inside_quotes);
+#endif
 
 	*read_bytes = 0ul;
 	for (i = 0ul; str && *str != '\0'; str++, i++, (*read_bytes)++)
@@ -45,7 +51,8 @@ char *read_token(const char *str, char *last_ch, size_t *read_bytes,
 		{ /* Ignore special characters if inside quotes */ }
 		else if (is_limiter(*str))
 		{
-			if (*str == '"')
+			/* Don't drop the flag if quote is not the first character*/
+			if (*str == '"' && i == 0ul)
 				*inside_quotes = !(*inside_quotes);
 			if (i == 0)
 			{
@@ -65,6 +72,11 @@ char *read_token(const char *str, char *last_ch, size_t *read_bytes,
 	buf[i] = '\0';
 	token = (char *) malloc(i);
 	strcpy(token, buf);
+#ifdef DEBUG
+	fprintf(stderr, "--------read_token() end token [%s] last_ch [%c] " \
+		"read_bytes [%lu] inside_quotes [%d]\n", token, *last_ch, *read_bytes,
+		*inside_quotes);
+#endif
 	return token;
 }
 
@@ -146,22 +158,22 @@ void unify_multiple_tokens(st_token_item *head)
 
 int analyze_type(const st_token_item *item)
 {
-	if (strcmp(item->str, "|")  == 0)
-		return unknown;
-	else if (strcmp(item->str, "&") == 0)
+	if (strcmp(item->str, "&") == 0)
 		return bg_process;
 	else if (strcmp(item->str, ";") == 0)
 		return separator;
-	else if (strcmp(item->str, "<") == 0)
-		return unknown;
-	else if (strcmp(item->str, ">") == 0)
-		return unknown;
-	else if (strcmp(item->str, ">>") == 0)
-		return unknown;
-	else if (strcmp(item->str, "||") == 0)
-		return or_op;
-	else if (strcmp(item->str, "&&") == 0)
-		return and_op;
+	else if (
+		strcmp(item->str, "<") == 0 ||
+		strcmp(item->str, ">") == 0 ||
+		strcmp(item->str, ">>") == 0)
+		return file_redirector;
+
+	/* else if (strcmp(item->str, "|") == 0) */
+	/* 	return unknown; */
+	/* else if (strcmp(item->str, "||") == 0) */
+	/* 	return or_op; */
+	/* else if (strcmp(item->str, "&&") == 0) */
+	/* 	return and_op; */
 	/* Probably won't be supported */
 	/* else if (strcmp(item->str, "(") == 0) */
 	/* 	return unknown; */
@@ -171,20 +183,97 @@ int analyze_type(const st_token_item *item)
 		return arg;
 }
 
+void analyze_redirector(const char *str, int *fd, int *app, void *dir_v)
+{
+	int *dir = (int *) dir_v;
+	if (strcmp(str, "<") == 0)
+	{
+		*fd = 0; /* stdin */
+		*app = 0;
+		*dir = rd_in;
+	}
+	else if (strcmp(str, ">") == 0)
+	{
+		*fd = 1; /* stdout */
+		*app = 0;
+		*dir = rd_out;
+	}
+	else if (strcmp(str, ">>") == 0)
+	{
+		*fd = 1; /* stdout */
+		*app = 1;
+		*dir = rd_out;
+	}
+}
+
+void setup_redirector(st_token_item *item)
+{
+	char *redir_arg;
+	size_t len;
+	st_redirector *redir = st_redirector_create_empty();
+
+	/* use 'if' instead of 'assert' because syntax control is not yet done */
+	if (item->next)
+	{
+		len = strlen(item->next->str);
+		redir_arg = (char *) malloc(len);
+		redir->path = strcpy(redir_arg, item->next->str);
+	}
+	analyze_redirector(item->str, &redir->fd, &redir->app, &redir->dir);
+	assert(redir->dir != rd_ukw);
+
+	item->redir = redir;
+}
+
 void analyze_token_types(st_token_item *head)
 {
-	while (head)
+	int type, last_type, expr_tokens = 0;
+	for (; head; head = head->next)
 	{
-		head->type = analyze_type(head);
-		head = head->next;
+		type = analyze_type(head);
+		if (type == arg)
+		{
+			if (expr_tokens == 0)
+			{
+				type = program;
+#ifdef DEBUG
+				printf("New expression is being analyzed\n");
+#endif
+			}
+			else if (last_type == file_redirector)
+			{
+				type = redirector_path;
+#ifdef DEBUG
+				printf("A redirector path has been found - [%s]\n",
+					head->str);
+#endif
+			}
+		}
+		else if (type == file_redirector)
+			setup_redirector(head);
+		else if (is_terminator_token(head))
+		{
+#ifdef DEBUG
+			printf("Last expression is formed up from %d tokens\n", expr_tokens);
+#endif
+			expr_tokens = -1; /* new expression reading must start with 0 */
+		}
+
+		head->type = type;
+		last_type = type;
+		expr_tokens++;
 	}
+#ifdef DEBUG
+	if (expr_tokens > 0)
+		printf("Last expression is formed up from %d tokens\n", expr_tokens);
+#endif
 }
 
 int check_quotes(const st_token_item *head)
 {
 	size_t count;
 	count = st_token_item_count(head, &is_quote);
-	return (count % 2ul) == 1ul;
+	return (count % 2ul) == 1ul ? SC_MSQUO : MT_OK;
 }
 
 int is_reserved(const st_token_item *item)
@@ -192,16 +281,16 @@ int is_reserved(const st_token_item *item)
 	if (!item)
 		return 0;
 	return
-		strcmp(item->str, "|")  == 0 ||
+		/* strcmp(item->str, "|")  == 0 || */
 		strcmp(item->str, "&")  == 0 ||
 		strcmp(item->str, ";")  == 0 ||
-		strcmp(item->str, "(")  == 0 ||
-		strcmp(item->str, ")")  == 0 ||
+		/* strcmp(item->str, "(")  == 0 || */
+		/* strcmp(item->str, ")")  == 0 || */
 		strcmp(item->str, "<")  == 0 ||
 		strcmp(item->str, ">")  == 0 ||
-		strcmp(item->str, ">>") == 0 ||
-		strcmp(item->str, "||") == 0 ||
-		strcmp(item->str, "&&") == 0;
+		strcmp(item->str, ">>") == 0;
+		/* strcmp(item->str, "||") == 0 || */
+		/* strcmp(item->str, "&&") == 0; */
 }
 
 int check_reserved_tokens(const st_token_item *head)
@@ -216,21 +305,53 @@ int check_reserved_tokens(const st_token_item *head)
 		{
 			sprintf(mt_errstr, "Syntax error near unexpected token '%s'.",
 				head->str);
-			return 1;
+			return SC_MSRTK;
 		}
 		head = head->next;
 	}
-	return 0;
+	return MT_OK;
+}
+
+int check_redirector_tokens(const st_token_item *head)
+{
+	int flags, fd, last_type = -1;
+	st_redirector *redir;
+	for (; head; head = head->next)
+	{
+		if (head->type == file_redirector)
+		{
+			redir = head->redir;
+			if ((unsigned int) redir->fd >= sizeof(int))
+				return SC_USPFD;
+			fd = 1 << redir->fd;
+			if (flags & fd)
+				return SC_MSRDT;
+			flags |= fd;
+		}
+		else if (last_type == file_redirector &&
+			head->type != redirector_path)
+		{
+			return SC_MSREP;
+		}
+		else if (is_terminator_token(head))
+		{
+			flags = 0;
+		}
+		last_type = head->type;
+	}
+	return MT_OK;
 }
 
 int check_syntax(const st_token_item *head)
 {
 	mt_errno = MT_OK;
 
-	if (check_quotes(head))
-		mt_errno = SC_MSQUO;
-	if (mt_errno == MT_OK && check_reserved_tokens(head))
-		mt_errno = SC_MSRTK;
+	if (mt_errno == MT_OK)
+		mt_errno = check_quotes(head);
+	if (mt_errno == MT_OK)
+		mt_errno = check_reserved_tokens(head);
+	if (mt_errno == MT_OK)
+		mt_errno = check_redirector_tokens(head);
 
 	return mt_errno == MT_OK ? 0 : -1;
 }
@@ -239,4 +360,29 @@ void st_token_item_iterate(const st_token_item **head, size_t times)
 {
 	for (; times != 0ul; times--)
 		*head = (*head)->next;
+}
+
+int is_token_arg(const st_token_item *item)
+{
+	return item->type == arg || item->type == program;
+}
+
+int is_token_not_arg(const st_token_item *item)
+{
+	return !is_token_arg(item);
+}
+
+int is_terminator_token(const st_token_item *item)
+{
+	char *str = item->str;
+	return
+		strcmp(str, ";") == 0 ||
+		strcmp(str, "&") == 0 ||
+		strcmp(str, "&&") == 0 ||
+		strcmp(str, "||") == 0;
+}
+
+int is_token_redirector(const st_token_item *item)
+{
+	return item->type == file_redirector;
 }
