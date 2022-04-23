@@ -2,10 +2,15 @@
 
 #include <stdio.h>
 
-/* Supports only 1000 simulteneous background processes */
+/* Supports only 1000 simultaneous background processes */
 #define MAX_EID 1000
 static int available_eids[MAX_EID] = { 0 };
 
+/*
+ * EID module acts as if it managed own IDs from index 1, however internally
+ * it manages them from 0. The acquired and released EIDs from functions are
+ * incremented and decremented by one respectively.
+*/
 eid_t acquire_eid()
 {
 	int i = 0;
@@ -17,11 +22,12 @@ eid_t acquire_eid()
 		return -1;
 	}
 	available_eids[i] = 1;
-	return available_eids[i];
+	return i + 1;
 }
 
 void release_eid(eid_t eid)
 {
+	eid--;
 	if (eid < 0 || eid > MAX_EID)
 		return;
 	available_eids[eid] = 0;
