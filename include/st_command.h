@@ -38,6 +38,8 @@ typedef struct st_command
 	struct st_command *next;
 } st_command;
 
+extern char post_execution_msg[16368];
+
 st_command *st_command_create_empty();
 st_command *st_command_create(const struct st_token_item *head);
 st_command **st_commands_create(const struct st_token_item *head);
@@ -49,5 +51,7 @@ st_command *st_command_find(st_command *head, pid_t pid);
 int st_command_erase_item(st_command **head, st_command *item);
 pid_t execute_command(st_command *cmd);
 void check_zombies();
+void form_post_execution_msg(const st_command *cmd);
+void clear_post_execution_msg();
 
 #endif /* !ST_COMMAND_H */

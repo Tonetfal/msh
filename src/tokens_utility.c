@@ -295,17 +295,21 @@ int check_reserved_tokens(const st_token_item *head)
 {
 	size_t i = 0ul;
 	int reserved;
-	for (; head; i++)
+	for (; head && head->next; head = head->next, i++)
 	{
 		/* ignore ';' in this case, it's a standalone token */
 		reserved = strcmp(head->str, ";") != 0 && is_reserved(head);
+		if (strcmp(head->str, "&") == 0 && strcmp(head->next->str, ";") == 0)
+		{
+			head = head->next;
+			continue;
+		}
 		if ((reserved && i == 0ul) || (reserved && is_reserved(head->next)))
 		{
 			sprintf(mt_errstr, "Syntax error near unexpected token '%s'.",
 				head->str);
 			return SC_MSRTK;
 		}
-		head = head->next;
 	}
 	return MT_OK;
 }

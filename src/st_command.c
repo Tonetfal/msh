@@ -18,6 +18,7 @@
 #include <unistd.h>
 
 st_command *cmds_head = NULL;
+char post_execution_msg[16368];
 
 size_t count_command_tokens(const st_token_item *head)
 {
@@ -531,19 +532,31 @@ void check_zombies()
 	{
 		cmd = st_command_find(cmds_head, pid);
 		assert(cmd);
-
 		get_exec_result(buf, sizeof(buf), status);
-
-		printf("msh: Job %d, '", cmd->eid);
-		print_argv(cmd->argv);
-		printf("' has ended\n");
-
+		form_post_execution_msg(cmd);
 		status = st_command_erase_item(&cmds_head, cmd);
 #ifdef DEBUG
-		puts("A command has ");
+		fprintf(stderr, "check_zombies() - A command has ");
 		if (!status)
-			puts("not");
-		puts("been erased from the list.\n");
+			fprintf(stderr, "check_zombies() - not");
+		fprintf(stderr, "check_zombies() - been erased from the list.\n");
 #endif
 	}
+}
+
+void form_post_execution_msg(const st_command *cmd)
+{
+	char *target = post_execution_msg;
+	size_t maxlen = sizeof(post_execution_msg);
+	size_t len = strlen(target);
+
+	if (len > 0ul)
+		len += snprintf(target + len, maxlen, "\n");
+	snprintf(target + len, maxlen, "msh: Job %d, '%s' has ended",
+		cmd->eid, cmd->cmd_str);
+}
+
+void clear_post_execution_msg()
+{
+	post_execution_msg[0] = '\0';
 }

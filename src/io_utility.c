@@ -5,19 +5,25 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <signal.h>
 
 char *read_string(char *buf, const size_t size)
 {
-	char *res;
-	errno = 0;
-	res = fgets(buf, size - 1, stdin);
-	if (!res)
+	char *res = NULL;
+	do
 	{
-		if (errno == 0)
-			return NULL;
-		perror("Failed to read a string");
-		exit(1);
-	}
+		errno = 0;
+		res = fgets(buf, size - 1, stdin);
+		if (errno == EINTR)
+			continue;
+		if (!res)
+		{
+			if (errno == 0)
+				continue;
+			perror("Failed to read a string");
+			exit(1);
+		}
+	} while(!res);
 	res[strlen(res) - 1] = '\0';
 	return res;
 }

@@ -8,7 +8,9 @@
 
 #include <stddef.h>
 #include <stdio.h>
+#include <signal.h>
 
+#define UNUSED(x) (void) (x) /* ignore warning */
 #define HANDLE_ERROR(code, str, head) \
 	if (code == MT_ERR) \
 	{ \
@@ -16,6 +18,18 @@
 		st_token_item_clear(head); \
 		continue; \
 	}
+
+void sigchld_handler(int s)
+{
+	static int guard = 0;
+	UNUSED(s);
+	signal(SIGCHLD, &sigchld_handler);
+	if (guard)
+		return;
+	guard = 1;
+	check_zombies();
+	guard = 0;
+}
 
 int main()
 {
@@ -27,6 +41,8 @@ int main()
 	st_token_item *tokens = NULL;
 	st_command **cmds;
 
+	signal(SIGCHLD, &sigchld_handler);
+	clear_post_execution_msg();
 	for (;;)
 	{
 		st_invite_msg_form(&invite_msg);
@@ -71,7 +87,10 @@ int main()
 			st_token_item_clear(tokens);
 		}
 
-		check_zombies();
+		res = printf("%s", post_execution_msg);
+		clear_post_execution_msg();
+		if (res)
+			putchar(10);
 		cmds = NULL;
 	}
 	putchar(10);
