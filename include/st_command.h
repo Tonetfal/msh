@@ -53,5 +53,6 @@ pid_t execute_command(st_command *cmd);
 void check_zombies();
 void form_post_execution_msg(const st_command *cmd);
 void clear_post_execution_msg();
+void st_commands_free();
 
 #endif /* !ST_COMMAND_H */

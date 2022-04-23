@@ -33,7 +33,7 @@ void sigchld_handler(int s)
 
 int main()
 {
-	int res;
+	int res, cont= 1;
 	size_t i;
 	pid_t pid;
 	char buf[4096], *str;
@@ -43,7 +43,7 @@ int main()
 
 	signal(SIGCHLD, &sigchld_handler);
 	clear_post_execution_msg();
-	for (;;)
+	while (cont)
 	{
 		st_invite_msg_form(&invite_msg);
 		st_invite_msg_print(invite_msg);
@@ -55,10 +55,6 @@ int main()
 		tokens = form_token_list(str);
 		if (tokens)
 		{
-#ifdef DEBUG
-			printf("Tokens - ");
-			st_token_item_print(tokens);
-#endif
 			remove_quotes(&tokens);
 			unify_multiple_tokens(tokens);
 #ifdef DEBUG
@@ -82,7 +78,10 @@ int main()
 			{
 				pid = execute_command(cmds[i]);
 				if (pid == -1)
-					return 0;
+				{
+					cont = 0;
+					break;
+				}
 			}
 			st_token_item_clear(tokens);
 		}
@@ -94,6 +93,8 @@ int main()
 		cmds = NULL;
 	}
 	putchar(10);
+	st_invite_msg_delete(invite_msg);
+	st_commands_free();
 
 	return 0;
 }

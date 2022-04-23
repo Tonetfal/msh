@@ -2,6 +2,7 @@
 
 #include <ctype.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 int is_space(char ch)
@@ -50,4 +51,10 @@ size_t get_argv_total_length(int argc, char **argv)
 	fprintf(stderr, "get_argv_total_length() - len %lu\n", len);
 #endif
 	return len;
+}
+
+void free_if_exists(void *data)
+{
+	if (data)
+		free(data);
 }

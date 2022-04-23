@@ -143,7 +143,7 @@ void handle_command_redirector(const st_token_item *token, st_command *cmd)
 #endif
 }
 
-void on_token_handle(const st_token_item *token, char ***argv, st_command *cmd)
+void on_token_handle(const st_token_item *token, int *argc, char **argv, st_command *cmd)
 {
 	char *str;
 #ifdef DEBUG
@@ -154,10 +154,11 @@ void on_token_handle(const st_token_item *token, char ***argv, st_command *cmd)
 	{
 		case program:
 		case arg:
-			str = (char *) malloc(strlen(token->str) + 1);
+			str = (char *) malloc(strlen(token->str) + 1ul);
 			strcpy(str, token->str);
-			**argv = str;
-			(*argv)++;
+			argv[*argc] = str;
+			argv[(*argc) + 1] = NULL;
+			(*argc)++;
 			break;
 		case bg_process:
 			cmd->is_bg_process = 1;
@@ -181,8 +182,9 @@ void on_token_handle(const st_token_item *token, char ***argv, st_command *cmd)
 void handle_command_tokens(const st_token_item *head,
 	const st_token_item *tail, st_command *cmd, char **argv)
 {
+	int argc = 0;
 	for (; tail->next != head; head = head->next)
-		on_token_handle(head, &argv, cmd);
+		on_token_handle(head, &argc, argv, cmd);
 }
 
 st_command *st_command_create_empty()
@@ -212,7 +214,6 @@ st_command *st_command_create(const st_token_item *head)
 	allocate_redirectors_memory(head, tail, cmd);
 	handle_command_tokens(head, tail, cmd, argv);
 
-	argv[argc] = NULL;
 	cmd->argc = argc;
 	cmd->argv = argv;
 	cmd->cmd_str = form_command_string(head, tail);
@@ -285,30 +286,42 @@ void st_command_print(const st_command *cmd)
 	printf("\t\t%p\n\t]\n", (void *) redir[i]);
 }
 
+void argv_delete(char **argv)
+{
+	int i = 0;
+	if (!argv)
+		return;
+	for (; argv[i]; i++)
+		free(argv[i]);
+}
+
 void st_redirectors_delete(st_redirector **redirectors)
 {
-	for (; *redirectors; redirectors++)
-		st_redirector_delete(*redirectors);
+	size_t i = 0ul;
+	if (!redirectors)
+		return;
+	for (; redirectors[i]; i++)
+		st_redirector_delete(redirectors[i]);
+	free(redirectors);
 }
 
 void st_command_delete(st_command *cmd)
 {
 	if (!cmd)
 		return;
-	if (cmd->argv)
-		free(cmd->argv);
-	if (cmd->file_redirectors)
-	{
-		st_redirectors_delete(cmd->file_redirectors);
-		free(cmd->file_redirectors);
-	}
+	free_if_exists(cmd->cmd_str);
+	argv_delete(cmd->argv);
+	st_redirectors_delete(cmd->file_redirectors);
 	free(cmd);
 }
 
 void st_commands_delete(st_command **cmds)
 {
-	for (; *cmds; cmds++)
-		st_command_delete(*cmds);
+	size_t i = 0ul;
+	if (!cmds)
+		return;
+	for (; cmds[i]; i++)
+		st_command_delete(cmds[i]);
 }
 
 void output_exec_result(int status)
@@ -421,7 +434,6 @@ pid_t call_command(st_command *cmd)
 	if (pid == -1)
 	{
 		perror("Failed to fork");
-		exit(1);
 	}
 	if (pid == 0)
 	{
@@ -431,26 +443,32 @@ pid_t call_command(st_command *cmd)
 		strcpy(prg, cmd->argv[0]);
 		execvp(prg, cmd->argv);
 		perror(prg);
-		exit(1);
+		return -1;
 	}
 	return pid;
 }
 
 pid_t handle_process(st_command *cmd)
 {
-	int status;
-	eid_t eid = acquire_eid();
-	pid_t pid;
+	int status = 0;
 #ifdef DEBUG
 	fprintf(stderr, "--------handle_process() - start cmd [%s]\n", cmd->cmd_str);
 #endif
-	pid = call_command(cmd);
+	printf("%p\n", (void *) cmd);
 
-	cmd->pid = pid;
-	cmd->eid = eid;
+	cmd->eid = acquire_eid();
+	cmd->pid = call_command(cmd);
+	if (cmd->pid == -1)
+	{
+#ifdef DEBUG
+	fprintf(stderr, "--------handle_process() - end by if pid == -1\n");
+#endif
+		st_command_delete(cmd);
+		return 0;
+	}
 	if (!cmd->is_bg_process)
 	{
-		wait4(pid, &status, 0, NULL);
+		wait4(cmd->pid, &status, 0, NULL);
 		output_exec_result(status);
 	}
 	else
@@ -459,7 +477,7 @@ pid_t handle_process(st_command *cmd)
 #ifdef DEBUG
 	fprintf(stderr, "--------handle_process() - end\n");
 #endif
-	return pid;
+	return cmd->pid;
 }
 
 void st_command_push_back(st_command **head, st_command *new_item)
@@ -515,7 +533,7 @@ pid_t execute_command(st_command *cmd)
 		handle_cd(cmd);
 	else if (strcmp(cmd->argv[0], "export") == 0)
 		handle_export(cmd);
-	else if (strcmp(cmd->argv[0], "exit") == 0)
+	else if (strcmp(cmd->argv[0], "exitaa") == 0)
 		pid = -1;
 	else
 		pid = handle_process(cmd);
@@ -559,4 +577,9 @@ void form_post_execution_msg(const st_command *cmd)
 void clear_post_execution_msg()
 {
 	post_execution_msg[0] = '\0';
+}
+
+void st_commands_free()
+{
+	st_commands_delete(&cmds_head);
 }
