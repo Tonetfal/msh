@@ -19,6 +19,7 @@
    - & (background process)
    - ; (command separator)
    - >, <, >> (redirection only into files)
+   - | (pipe line)
 */
 
 typedef struct st_token_item
@@ -29,7 +30,7 @@ typedef struct st_token_item
 		arg,
 		bg_process,
 		file_redirector,
-		/* process_redirector, */
+		process_redirector,
 		redirector_path,
 		separator,
 		tk_unk

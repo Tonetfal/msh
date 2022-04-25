@@ -122,14 +122,19 @@ size_t st_token_range_item_count(const st_token_item *head,
 			count++; \
 	} while(0);
 
+	int passed_tail = 0;
 	size_t count = 0ul;
 	assert(head);
 	if (!tail)
 		for (; head; head = head->next)
 			FOR_BODY
 	else
-		for (; head != tail->next; head = head->next)
+		for (; !passed_tail; head = head->next)
+		{
 			FOR_BODY
+			if (head == tail)
+				passed_tail = 1;
+		}
 
 	return count;
 #undef FOR_BODY
@@ -140,14 +145,19 @@ size_t st_token_range_str_length(const st_token_item *head,
 {
 #define FOR_BODY len += strlen(head->str);
 
+	int passed_tail = 0;
 	size_t len = 0ul;
 	assert(head);
 	if (!tail)
 		for (; head; head = head->next)
 			FOR_BODY
 	else
-		for (; head != tail->next; head = head->next)
+		for (; !passed_tail; head = head->next)
+		{
 			FOR_BODY
+			if (head == tail)
+				passed_tail = 1;
+		}
 
 	return len;
 #undef FOR_BODY

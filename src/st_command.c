@@ -18,14 +18,14 @@
 #include <unistd.h>
 
 st_command *cmds_head = NULL;
-char post_execution_msg[16368];
+char post_execution_msg[16368] = {0};
 
 size_t count_command_tokens(const st_token_item *head)
 {
 	size_t i = 0ul;
 	for (; head; head = head->next, i++)
 	{
-		if (is_terminator_token(head))
+		if (st_token_item_is_hard_delim(head))
 			break;
 	}
 	if (head)
@@ -54,21 +54,36 @@ size_t count_redirectors(const st_command *cmd)
 	return count;
 }
 
+void handle_process_redirector_presence(size_t *tokens_len, size_t *token_c,
+	size_t *totlen)
+{
+	*tokens_len	-= 1ul;
+	(*token_c)--;
+	*totlen -= 2ul;
+}
+
 char *form_command_string(const st_token_item *head, const st_token_item *tail)
 {
+	int passed_tail = 0;
 	char *str;
 	size_t len = 0ul,
 		tokens_len = st_token_range_str_length(head, tail),
 		token_c = st_token_range_item_count(head, tail, NULL),
 		totlen = tokens_len + token_c;
+	if (st_token_item_range_contains(head, tail, process_redirector))
+		handle_process_redirector_presence(&tokens_len, &token_c, &totlen);
 	str = (char *) malloc(totlen + 1);
 #ifdef DEBUG
 	fprintf(stderr, "form_command_string() - tokens_len %lu token_c %lu " \
 		"totlen %lu\n", tokens_len, token_c, totlen);
 #endif
-	for (; head != tail->next; head = head->next)
+	for (; !passed_tail; head = head->next)
+	{
 		len += sprintf(str + len, "%s ", head->str);
-	str[totlen - 1] = '\0';
+		if (head == tail)
+			passed_tail = 1;
+	}
+	str[totlen - 1ul] = '\0';
 #ifdef DEBUG
 	fprintf(stderr, "form_command_string() - Formed string [%s]\n", str);
 #endif
@@ -78,26 +93,28 @@ char *form_command_string(const st_token_item *head, const st_token_item *tail)
 void allocate_arguments_memory(const st_token_item *head,
 	const st_token_item *tail, int *argc, char ***argv)
 {
+	size_t bytes;
 	*argc = (int) st_token_range_item_count(head, tail, &is_token_arg);
-	*argv = (char **) malloc((*argc + 1) * sizeof(char *));
+	bytes = (*argc + 1) * sizeof(char *);
+	*argv = (char **) malloc(bytes);
 #ifdef DEBUG
 	fprintf(stderr, "allocate_arguments_memory() - argc %i allocated bytes " \
-		"%lu\n", *argc, (*argc + 1) * sizeof(char *));
+		"%lu\n", *argc, bytes);
 #endif
 }
 
 void allocate_redirectors_memory(const st_token_item *head,
 	const st_token_item *tail, st_command *cmd)
 {
-	size_t i, redir_c = st_token_range_item_count(head, tail,
-		&is_token_redirector);
-	cmd->file_redirectors = (st_file_redirector **) malloc(
-		(redir_c + 1) * sizeof(st_file_redirector *));
+	size_t i,
+		redir_c = st_token_range_item_count(head, tail, &is_token_redirector),
+		bytes = (redir_c + 1) * sizeof(st_file_redirector *);
+	cmd->file_redirectors = (st_file_redirector **) malloc(bytes);
 	for (i = 0ul; i < redir_c + 1; i++)
 		cmd->file_redirectors[i] = NULL;
 #ifdef DEBUG
 	fprintf(stderr, "allocate_redirectors_memory() - redir_c %lu allocated " \
-		"bytes %lu\n", redir_c, (redir_c + 1) * sizeof(st_file_redirector *));
+		"bytes %lu\n", redir_c, bytes);
 #endif
 }
 
@@ -143,9 +160,27 @@ void handle_command_redirector(const st_token_item *token, st_command *cmd)
 #endif
 }
 
-void on_token_handle(const st_token_item *token, int *argc, char **argv, st_command *cmd)
+void handle_arg(const st_token_item *token, int *argc, char **argv)
 {
 	char *str;
+	str = (char *) malloc(strlen(token->str) + 1ul);
+	strcpy(str, token->str);
+	argv[*argc] = str;
+	argv[(*argc) + 1] = NULL;
+	(*argc)++;
+}
+
+void handle_pipe(st_command *cmd)
+{
+	int pipefd[2];
+	pipe(pipefd);
+	cmd->pipefd[1] = pipefd[1];
+	cmd->is_hidden_bg_process = 1;
+}
+
+void on_token_handle(const st_token_item *token, int *argc, char **argv,
+	st_command *cmd)
+{
 #ifdef DEBUG
 	fprintf(stderr, "on_token_handle() - start token - [%s] type - [%d]\n",
 		token->str, token->type);
@@ -154,11 +189,7 @@ void on_token_handle(const st_token_item *token, int *argc, char **argv, st_comm
 	{
 		case program:
 		case arg:
-			str = (char *) malloc(strlen(token->str) + 1ul);
-			strcpy(str, token->str);
-			argv[*argc] = str;
-			argv[(*argc) + 1] = NULL;
-			(*argc)++;
+			handle_arg(token, argc, argv);
 			break;
 		case bg_process:
 			cmd->is_bg_process = 1;
@@ -170,9 +201,13 @@ void on_token_handle(const st_token_item *token, int *argc, char **argv, st_comm
 		case file_redirector:
 			handle_command_redirector(token, cmd);
 			break;
+		case process_redirector:
+			handle_pipe(cmd);
+			break;
 		default:
 			fprintf(stderr, "A non implemented token has been passed - " \
 				"String: [%s] Type: [%d]\n", token->str, token->type);
+			sleep(1); /* Just for debug purposes */
 	}
 #ifdef DEBUG
 	fprintf(stderr, "on_token_handle() - end\n");
@@ -182,9 +217,20 @@ void on_token_handle(const st_token_item *token, int *argc, char **argv, st_comm
 void handle_command_tokens(const st_token_item *head,
 	const st_token_item *tail, st_command *cmd, char **argv)
 {
-	int argc = 0;
-	for (; tail->next != head; head = head->next)
+	int argc = 0, passed_tail = 0;
+	for (; !passed_tail; head = head->next)
+	{
 		on_token_handle(head, &argc, argv, cmd);
+		if (head == tail)
+			passed_tail = 1;
+	}
+}
+
+void check_for_pipe(st_command *cmd, const st_command *prev_cmd)
+{
+	if (!prev_cmd || prev_cmd->pipefd[1] == -1)
+		return;
+	cmd->pipefd[0] = prev_cmd->pipefd[1] - 1;
 }
 
 st_command *st_command_create_empty()
@@ -194,14 +240,19 @@ st_command *st_command_create_empty()
 	cmd->argc = 0;
 	cmd->argv = NULL;
 	cmd->is_bg_process = 0;
+	cmd->is_hidden_bg_process = 0;
 	cmd->file_redirectors = NULL;
+	cmd->pipefd[0] = -1;
+	cmd->pipefd[1] = -1;
 	cmd->pid = -1;
 	cmd->eid = -1;
 	cmd->next = NULL;
+	cmd->prev = NULL;
 	return cmd;
 }
 
-st_command *st_command_create(const st_token_item *head)
+st_command *st_command_create(const st_token_item *head,
+	const st_command *prev_cmd)
 {
 	int argc;
 	char **argv;
@@ -212,6 +263,7 @@ st_command *st_command_create(const st_token_item *head)
 
 	allocate_arguments_memory(head, tail, &argc, &argv);
 	allocate_redirectors_memory(head, tail, cmd);
+	check_for_pipe(cmd, prev_cmd);
 	handle_command_tokens(head, tail, cmd, argv);
 
 	cmd->argc = argc;
@@ -242,7 +294,7 @@ st_command **st_commands_create(const st_token_item *head)
 #endif
 	for (i = 0ul; it; i++)
 	{
-		cmds[i] = st_command_create(it);
+		cmds[i] = st_command_create(it, i > 0ul ? cmds[i - 1ul] : NULL);
 		tokenc = count_command_tokens(it);
 		st_token_item_iterate(&it, tokenc);
 
@@ -284,6 +336,8 @@ void st_command_print(const st_command *cmd)
 		printf("],\n");
 	}
 	printf("\t\t%p\n\t]\n", (void *) redir[i]);
+	printf("\tpipefd: %d %d\n", cmd->pipefd[0], cmd->pipefd[1]);
+	printf("\tNext: %p Prev: %p\n", (void *) cmd->next, (void *) cmd->prev);
 }
 
 void argv_delete(char **argv)
@@ -324,18 +378,16 @@ void st_commands_delete(st_command **cmds)
 		st_command_delete(cmds[i]);
 }
 
-void output_exec_result(int status)
+int output_exec_result(int status)
 {
 	if (status != 0)
 	{
 		/* if (WIFEXITED(status)) */
 		/* 	printf("Terminated with %d", WEXITSTATUS(status)); */
 		if (WIFSIGNALED(status))
-		{
 			printf("Signal code %d", WTERMSIG(status));
-			putchar(10);
-		}
 	}
+	return status != 0;
 }
 
 char *get_exec_result(char *buf, size_t len, int status)
@@ -344,7 +396,7 @@ char *get_exec_result(char *buf, size_t len, int status)
 	{
 		if (WIFEXITED(status))
 			snprintf(buf, len, "Terminated with %d", WEXITSTATUS(status));
-		else
+		if (WIFSIGNALED(status))
 			snprintf(buf, len, "Signal code %d", WTERMSIG(status));
 	}
 	return buf;
@@ -398,7 +450,7 @@ void handle_cd(const st_command *cmd)
 		perror("Failed to change directory");
 }
 
-int redirect_streams(st_command *cmd)
+int redirect_file_stream(st_command *cmd)
 {
 	int fd;
 	size_t i;
@@ -406,7 +458,7 @@ int redirect_streams(st_command *cmd)
 	for (i = 0ul; redic[i]; i++)
 	{
 #ifdef DEBUG
-		fprintf(stderr, "redirect_streams() - new iteration. redirector: ");
+		fprintf(stderr, "redirect_file_stream() - new iteration. redirector: ");
 		st_redirector_print(redic[i]);
 		putchar(10);
 #endif
@@ -417,32 +469,62 @@ int redirect_streams(st_command *cmd)
 			0666);
 		if (fd == -1)
 		{
-			fprintf(stderr, "redirect_streams(%s): ", redic[i]->path);
-			perror("");
-			return 0;
+			fprintf(stderr, "redirect_file_stream(%s): ", redic[i]->path);
+			perror("Failed to open");
+			return 1;
 		}
 		/* redirect a stream */
 		dup2(fd, redic[i]->fd);
 	}
-	return 1;
+	return 0;
+}
+
+#define ERROR() \
+	if (res == -1) \
+	{ \
+		perror("dup2"); \
+		return 1; \
+	}
+
+int redirect_process_stream(st_command *cmd)
+{
+	int res = 0;
+	if (cmd->pipefd[0] != -1)
+		res = dup2(cmd->pipefd[0], 0);
+	ERROR();
+	if (cmd->pipefd[1] != -1)
+		res = dup2(cmd->pipefd[1], 1);
+	ERROR();
+	return 0;
+}
+#undef ERROR
+
+int redirect_streams(st_command *cmd)
+{
+	if (cmd->file_redirectors && redirect_file_stream(cmd))
+		return 1;
+	if ((cmd->pipefd[0] != -1 || cmd->pipefd[1] != -1) &&
+		redirect_process_stream(cmd))
+		return 1;
+	return 0;
 }
 
 pid_t call_command(st_command *cmd)
 {
-	char prg[256];
 	pid_t pid = fork();
 	if (pid == -1)
-	{
 		perror("Failed to fork");
-	}
-	if (pid == 0)
+	else if (pid == 0)
 	{
 		cmd->pid = pid;
-		if (!redirect_streams(cmd))
-			return pid;
-		strcpy(prg, cmd->argv[0]);
-		execvp(prg, cmd->argv);
-		perror(prg);
+		if (redirect_streams(cmd))
+		{
+			fprintf(stderr, "call_command() - '%s' exit on " \
+				"redirect_streams()", cmd->cmd_str);
+			exit(1);
+		}
+		execvp(cmd->argv[0], cmd->argv);
+		perror(cmd->cmd_str);
 		return -1;
 	}
 	return pid;
@@ -450,13 +532,14 @@ pid_t call_command(st_command *cmd)
 
 pid_t handle_process(st_command *cmd)
 {
-	int status = 0;
+	int status = 0, res;
 #ifdef DEBUG
-	fprintf(stderr, "--------handle_process() - start cmd [%s]\n", cmd->cmd_str);
+	fprintf(stderr, "--------handle_process() - start cmd [%s]\n",
+		cmd->cmd_str);
 #endif
-	printf("%p\n", (void *) cmd);
 
-	cmd->eid = acquire_eid();
+	if (cmd->is_bg_process)
+		cmd->eid =acquire_eid();
 	cmd->pid = call_command(cmd);
 	if (cmd->pid == -1)
 	{
@@ -466,10 +549,12 @@ pid_t handle_process(st_command *cmd)
 		st_command_delete(cmd);
 		return 0;
 	}
-	if (!cmd->is_bg_process)
+	if (!cmd->is_bg_process && !cmd->is_hidden_bg_process)
 	{
 		wait4(cmd->pid, &status, 0, NULL);
-		output_exec_result(status);
+		res = output_exec_result(status);
+		if (res)
+			putchar(10);
 	}
 	else
 		st_command_push_back(&cmds_head, cmd);
@@ -490,6 +575,7 @@ void st_command_push_back(st_command **head, st_command *new_item)
 		while (it->next)
 			it = it->next;
 		it->next = new_item;
+		new_item->prev = it;
 	}
 }
 
@@ -505,23 +591,19 @@ st_command *st_command_find(st_command *head, pid_t pid)
 
 int st_command_erase_item(st_command **head, st_command *item)
 {
-	st_command *it;
 	if (!(*head) || !item)
 		return 0;
 	if (*head == item)
 	{
 		*head = (*head)->next;
-		st_command_delete(item);
-		return 1;
+		if (*head)
+			(*head)->prev = NULL;
 	}
-
-	it = *head;
-	while (it->next && it->next != item)
-		it = it->next;
-	if (!it->next)
-		return 0;
-
-	it->next = item->next;
+	else
+	{
+		item->prev->next = item->next;
+		item->next->prev = item->prev;
+	}
 	st_command_delete(item);
 	return 1;
 }
@@ -567,6 +649,11 @@ void form_post_execution_msg(const st_command *cmd)
 	char *target = post_execution_msg;
 	size_t maxlen = sizeof(post_execution_msg);
 	size_t len = strlen(target);
+
+	/* a bg process can have eid -1 in case of pipe line and message about
+	   its ending shouldn't be shown */
+	if (cmd->eid == -1)
+		return;
 
 	if (len > 0ul)
 		len += snprintf(target + len, maxlen, "\n");

@@ -6,9 +6,10 @@
 #include "st_token_item.h"
 #include "tokens_utility.h"
 
+#include <signal.h>
 #include <stddef.h>
 #include <stdio.h>
-#include <signal.h>
+#include <unistd.h>
 
 #define UNUSED(x) (void) (x) /* ignore warning */
 #define HANDLE_ERROR(code, str, head) \

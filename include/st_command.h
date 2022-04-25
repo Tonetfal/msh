@@ -29,19 +29,20 @@ typedef struct st_command
 	int argc;
 	char **argv;
 	int is_bg_process;
+	int is_hidden_bg_process;
 	st_file_redirector **file_redirectors;
-	/* TO IMPLEMENT */
-	/* st_process_redirector **process_redirectors; */
+	int pipefd[2];
 
 	pid_t pid;
 	eid_t eid;
-	struct st_command *next;
+	struct st_command *next, *prev;
 } st_command;
 
 extern char post_execution_msg[16368];
 
 st_command *st_command_create_empty();
-st_command *st_command_create(const struct st_token_item *head);
+st_command *st_command_create(const struct st_token_item *head,
+	const st_command *prev_cmd);
 st_command **st_commands_create(const struct st_token_item *head);
 void st_command_print(const st_command *cmd);
 void st_command_delete(st_command *cmd);
