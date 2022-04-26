@@ -42,7 +42,7 @@ extern char post_execution_msg[16368];
 
 st_command *st_command_create_empty();
 st_command *st_command_create(const struct st_token_item *head,
-	const st_command *prev_cmd);
+	st_command *prev_cmd);
 st_command **st_commands_create(const struct st_token_item *head);
 void st_command_print(const st_command *cmd);
 void st_command_delete(st_command *cmd);

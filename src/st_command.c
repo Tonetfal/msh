@@ -35,7 +35,8 @@ size_t count_command_tokens(const st_token_item *head)
 
 const st_token_item *find_command_tail(const st_token_item *head)
 {
-	st_token_item_iterate(&head, count_command_tokens(head) - 1ul);
+	size_t token_c = count_command_tokens(head);
+	st_token_item_iterate(&head, token_c - 1ul);
 	return head;
 }
 
@@ -251,8 +252,7 @@ st_command *st_command_create_empty()
 	return cmd;
 }
 
-st_command *st_command_create(const st_token_item *head,
-	const st_command *prev_cmd)
+st_command *st_command_create(const st_token_item *head, st_command *prev_cmd)
 {
 	int argc;
 	char **argv;
@@ -269,6 +269,7 @@ st_command *st_command_create(const st_token_item *head,
 	cmd->argc = argc;
 	cmd->argv = argv;
 	cmd->cmd_str = form_command_string(head, tail);
+	cmd->prev = prev_cmd;
 
 #ifdef DEBUG
 	fputs("st_command_create() - New command has been created\n", stderr);
@@ -530,6 +531,18 @@ pid_t call_command(st_command *cmd)
 	return pid;
 }
 
+void close_used_descriptors(st_command *cmd)
+{
+	int fd = cmd->pipefd[0];
+	if (fd == -1)
+		return;
+	assert(cmd->prev);
+	close(fd);
+	close(fd - 1);
+	cmd->pipefd[0] = -2;
+	cmd->prev->pipefd[0] = -2;
+}
+
 pid_t handle_process(st_command *cmd)
 {
 	int status = 0, res;
@@ -558,6 +571,7 @@ pid_t handle_process(st_command *cmd)
 	}
 	else
 		st_command_push_back(&cmds_head, cmd);
+	close_used_descriptors(cmd);
 
 #ifdef DEBUG
 	fprintf(stderr, "--------handle_process() - end\n");
@@ -615,7 +629,7 @@ pid_t execute_command(st_command *cmd)
 		handle_cd(cmd);
 	else if (strcmp(cmd->argv[0], "export") == 0)
 		handle_export(cmd);
-	else if (strcmp(cmd->argv[0], "exitaa") == 0)
+	else if (strcmp(cmd->argv[0], "exit") == 0)
 		pid = -1;
 	else
 		pid = handle_process(cmd);
@@ -638,8 +652,8 @@ void check_zombies()
 #ifdef DEBUG
 		fprintf(stderr, "check_zombies() - A command has ");
 		if (!status)
-			fprintf(stderr, "check_zombies() - not");
-		fprintf(stderr, "check_zombies() - been erased from the list.\n");
+			fprintf(stderr, "not");
+		fprintf(stderr, "been erased from the list.\n");
 #endif
 	}
 }

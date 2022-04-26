@@ -50,6 +50,7 @@ int is_hard_delim_str(const char *str)
 	char hard_delims[][3] = {
 		"|",
 		";",
+		"&",
 		/* "&&", */
 		/* "||" */
 	};
@@ -63,9 +64,10 @@ int is_hard_delim_str(const char *str)
 
 int st_token_item_is_hard_delim(const st_token_item *item)
 {
-	const int hard_delims[] = {
-		process_redirector,
-		separator,
+	const char hard_delims[] = {
+		(char) process_redirector,
+		(char) separator,
+		(char) bg_process,
 		/*
 		and_op,
 		or_op
@@ -75,7 +77,7 @@ int st_token_item_is_hard_delim(const st_token_item *item)
 
 	for (i = 0ul; i < sizeof(hard_delims); i++)
 	{
-		if ((int) item->type == hard_delims[i])
+		if ((char) item->type == hard_delims[i])
 			return 1;
 	}
 	return 0;
