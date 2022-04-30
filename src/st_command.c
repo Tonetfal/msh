@@ -887,7 +887,8 @@ void handle_exec_res(st_command *cmd, int status)
 	int code;
 	TRACEE("pid %d cmd '%s'\n", cmd->pid, cmd->cmd_str);
 	code = output_exec_result(status);
-	print_term_msg_sig(cmd, code);
+	if (cmd->flags & CMD_BG)
+		print_term_msg_sig(cmd, code);
 	handle_blocking(cmd);
 	RAISE_ZGUARD();
 	TRACE("Child process clean up\n");
