@@ -2,7 +2,7 @@
 CC = gcc
 
 # Target
-TARGET = shell3
+TARGET = msh
 
 # The directories
 SRCDIR = src
@@ -13,18 +13,16 @@ OBJEXT = o
 
 # Flags, Libraries and Includes
 CFLAGS = \
-	-std=c89 \
-	-pedantic \
+	-std=c99 \
 	-ansi \
 	-O0 \
 	-Wall \
 	-Wextra \
 	-Werror \
 	-Wno-long-long \
-	-Wno-variadic-macros \
 	-fexceptions \
 	-g
-	# -DDEBUG
+	# -DLOGLVL=1
 INC = -I$(INCDIR)
 
 # Sources and Objects
