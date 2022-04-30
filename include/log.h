@@ -3,15 +3,18 @@
 
 #include <assert.h>
 
-#if LOGLVL <= 1
-	#define _TRACE
-#endif
-#if LOGLVL <= 2
-	#define _DEBUG
+#ifdef LOGLVL
+	#if LOGLVL <= 1
+		#define _TRACE
+	#endif
+	#if LOGLVL <= 2
+		#define _DEBUG
+	#endif
 #endif
 
 #define TAB "    "
 #ifdef _TRACE
+	#warning "_TRACE is defined"
 	extern int tabs, __n;
 
 	#define PRINT_TABS \
