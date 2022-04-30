@@ -1,14 +1,14 @@
 #ifndef ST_DLL_STRING
 #define ST_DLL_STRING
 
-#include <sys/types.h>
+#include "def.h"
 
 /* Double linked list string */
-typedef struct st_dll_string
+struct st_dll_string
 {
 	char *str;
 	struct st_dll_string *prev, *next;
-} st_dll_string;
+};
 
 st_dll_string *st_dll_string_create_empty();
 st_dll_string *st_dll_string_create(const char *str);

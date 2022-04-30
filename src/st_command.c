@@ -1,15 +1,17 @@
-/* C89 support */
-#define _XOPEN_SOURCE 500 /* snprintf */
+#define _XOPEN_SOURCE 500 /* snprintf, usleep */
 #define _DEFAULT_SOURCE /* wait4 */
 
 #include "io_utility.h"
 #include "st_command.h"
 #include "st_dll_string.h"
-#include "st_token_item.h"
+#include "st_redirector.h"
+#include "st_token.h"
 #include "tokens_utility.h"
 #include "utility.h"
+#include "log.h"
 
 #include <assert.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,15 +19,36 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-st_command *cmds_head = NULL;
-char post_execution_msg[16368] = {0};
+#define SKIP_TIME_SLICE() usleep(1000)
+#define WAIT_FOR(flag) while (flag) SKIP_TIME_SLICE()
+#define RAISE_ZGUARD() TRACE("\n"); zombie_guard = 1
+#define DROP_ZGUARD() TRACE("\n"); zombie_guard = 0
+#define CLOSE_FD(fd) \
+	do \
+	{ \
+		if (close(fd) == -1) \
+		{ \
+			TRACE("CLOSE_FD %d: ", fd); \
+			perror(""); \
+		} \
+		else \
+		{ \
+			TRACE("Closed fd %d\n", fd); \
+		} \
+	} while(0)
 
-size_t count_command_tokens(const st_token_item *head)
+volatile int continue_main_process = 1;
+volatile int zombie_guard = 0;
+char post_execution_msg[16368] = {0};
+volatile size_t blocking_processes = 0ul;
+st_command *cmds_head = NULL, *recent_cmds = NULL;
+
+size_t count_command_tokens(const st_token *head)
 {
 	size_t i = 0ul;
 	for (; head; head = head->next, i++)
 	{
-		if (st_token_item_is_hard_delim(head))
+		if (is_hard_delim(head))
 			break;
 	}
 	if (head)
@@ -33,10 +56,10 @@ size_t count_command_tokens(const st_token_item *head)
 	return i;
 }
 
-const st_token_item *find_command_tail(const st_token_item *head)
+const st_token *find_command_tail(const st_token *head)
 {
 	size_t token_c = count_command_tokens(head);
-	st_token_item_iterate(&head, token_c - 1ul);
+	st_token_iterate(&head, token_c - 1ul);
 	return head;
 }
 
@@ -44,84 +67,106 @@ size_t count_redirectors(const st_command *cmd)
 {
 	size_t count = 0ul, i = 0ul;
 	st_redirector **redir = cmd->file_redirectors;
-#ifdef DEBUG
-	fprintf(stderr, "--------count_redirectors() - start\n");
-#endif
+	TRACEE("\n");
 	for (; redir[i]; i++)
 		count++;
-#ifdef DEBUG
-	fprintf(stderr, "--------count_redirectors() - end count %lu\n", count);
-#endif
+	TRACEL("Count %lu\n", count);
 	return count;
 }
 
-void handle_process_redirector_presence(size_t *tokens_len, size_t *token_c,
-	size_t *totlen)
+void handle_process_redir_presence(const st_token *head,
+	const st_token *tail, size_t *tokens_len, size_t *token_c, size_t *totlen)
 {
-	*tokens_len	-= 1ul;
-	(*token_c)--;
-	*totlen -= 2ul;
+	if (st_token_find_range((st_token *) head,
+		(st_token *) tail, &st_token_contains, (void *) process_redirector))
+	{
+		*tokens_len	-= 1ul;
+		(*token_c)--;
+		*totlen -= 2ul;
+	}
 }
 
-char *form_command_string(const st_token_item *head, const st_token_item *tail)
+void token_strlen(st_token *item, void *length)
 {
-	int passed_tail = 0;
-	char *str;
-	size_t len = 0ul,
-		tokens_len = st_token_range_str_length(head, tail),
-		token_c = st_token_range_item_count(head, tail, NULL),
-		totlen = tokens_len + token_c;
-	if (st_token_item_range_contains(head, tail, process_redirector))
-		handle_process_redirector_presence(&tokens_len, &token_c, &totlen);
-	str = (char *) malloc(totlen + 1);
-#ifdef DEBUG
-	fprintf(stderr, "form_command_string() - tokens_len %lu token_c %lu " \
-		"totlen %lu\n", tokens_len, token_c, totlen);
-#endif
-	for (; !passed_tail; head = head->next)
+	*(size_t *) length += strlen(item->str);
+}
+
+void inc(st_token *item, void *data)
+{
+	UNUSED(item);
+	(*(int *) data)++;
+}
+
+void app_token_str(char *dest, const st_token *item, const st_token *tail)
+{
+	if (!item)
+		return;
+	if (!is_hard_delim(item) || item->type == bg_process)
 	{
-		len += sprintf(str + len, "%s ", head->str);
-		if (head == tail)
-			passed_tail = 1;
+		if (dest[0] != '\0')
+			strcat(dest, " ");
+		strcat(dest, item->str);
 	}
-	str[totlen - 1ul] = '\0';
-#ifdef DEBUG
-	fprintf(stderr, "form_command_string() - Formed string [%s]\n", str);
-#endif
+	if (item == tail)
+		return;
+	app_token_str(dest, item->next, tail);
+}
+
+char *form_command_string(const st_token *head, const st_token *tail)
+{
+	char *str;
+	size_t tokens_len = 0ul, token_c = 0ul, totlen;
+	TRACEE("head %p tail %p\n", (void *) head, (void *) tail);
+	st_token_traverse((st_token *) head, &token_strlen, (void *) &tokens_len);
+	st_token_traverse((st_token *) head, &inc, (void *) &token_c);
+	totlen = tokens_len + token_c;
+	handle_process_redir_presence(head, tail, &tokens_len, &token_c, &totlen);
+	str = (char *) calloc(totlen + 1, sizeof(char));
+	TRACE("tokens_len %lu token_c %lu totlen %lu\n", tokens_len, token_c,
+		totlen);
+	app_token_str(str, head, tail);
+	TRACEL("Formed string [%s]\n", str);
+	assert(!str[totlen]);
 	return str;
 }
 
-void allocate_arguments_memory(const st_token_item *head,
-	const st_token_item *tail, int *argc, char ***argv)
+void callback_is_arg(st_token *item, void *counter)
 {
-	size_t bytes;
-	*argc = (int) st_token_range_item_count(head, tail, &is_token_arg);
-	bytes = (*argc + 1) * sizeof(char *);
-	*argv = (char **) malloc(bytes);
-#ifdef DEBUG
-	fprintf(stderr, "allocate_arguments_memory() - argc %i allocated bytes " \
-		"%lu\n", *argc, bytes);
-#endif
+	int type = (int) item->type;
+	if (type == arg || type == program)
+		(*(int *) counter)++;
 }
 
-void allocate_redirectors_memory(const st_token_item *head,
-	const st_token_item *tail, st_command *cmd)
+void allocate_arguments_memory(const st_token *head,
+	const st_token *tail, int *argc, char ***argv)
 {
-	size_t i,
-		redir_c = st_token_range_item_count(head, tail, &is_token_redirector),
-		bytes = (redir_c + 1) * sizeof(st_file_redirector *);
-	cmd->file_redirectors = (st_file_redirector **) malloc(bytes);
-	for (i = 0ul; i < redir_c + 1; i++)
-		cmd->file_redirectors[i] = NULL;
-#ifdef DEBUG
-	fprintf(stderr, "allocate_redirectors_memory() - redir_c %lu allocated " \
-		"bytes %lu\n", redir_c, bytes);
-#endif
+	TRACEE("head %p tail %p\n", (void *) head, (void *) tail);
+	*argc = 0;
+	st_token_traverse_range((st_token *) head, (st_token *) tail,
+		&callback_is_arg, (void *) argc);
+	*argv = (char **) calloc(*argc + 1, sizeof(char *));
+	TRACEL("argc %i allocated bytes %lu\n", *argc,
+		(*argc + 1) * sizeof(char *));
 }
 
-size_t count_commands(const st_token_item *head)
+void allocate_redirectors_memory(const st_token *head,
+	const st_token *tail, st_command *cmd)
 {
-	size_t count = st_token_item_count(head, &is_token_not_arg);
+	size_t redir_c;
+	TRACEE("\n");
+	redir_c = st_token_count_range(head, tail, &st_token_compare,
+		(void *) file_redirector);
+	cmd->file_redirectors = (st_file_redirector **)
+		calloc(redir_c + 1, sizeof(st_file_redirector *));
+
+	TRACEL("redir_c %lu allocated bytes %lu\n", redir_c,
+		(redir_c + 1) * sizeof(st_file_redirector *));
+}
+
+size_t count_commands(const st_token *head)
+{
+	size_t count = st_token_count(head, &st_token_compare_not, (void *) arg);
+	TRACEE("Count %lu\n", count);
 	if (count == 0ul) /* user may input a command without any special token */
 	{
 		count += !!head; /* if head is not null add 1 */
@@ -130,62 +175,51 @@ size_t count_commands(const st_token_item *head)
 	{
 		while (head->next)
 			head = head->next;
-		count += is_token_arg(head);
+		count += head->type == arg;
 		/* if after last special token there is an arg add 1 */
 	}
-#ifdef DEBUG
-	fprintf(stderr, "count_commands() - count %lu\n", count);
-#endif
+	TRACEL("Count %lu\n", count);
 
 	return count;
 }
 
-void handle_command_redirector(const st_token_item *token, st_command *cmd)
+void handle_command_redirector(const st_token *token, st_command *cmd)
 {
 	size_t redir_c = count_redirectors(cmd);
 	st_redirector *redir = token->redir;
-	assert(is_token_redirector(token));
+	assert(token->type == file_redirector || token->type == process_redirector);
 	assert(token->next);
-#ifdef DEBUG
-	fprintf(stderr, "handle_command_redirector() - start redir_c %lu\n",
-		redir_c);
-	fprintf(stderr, "handle_command_redirector() - A new file redirector " \
-		"has been added to a command \n\t path [%s] fd %d app %d dir %d\n",
+	TRACEE("redir_c %lu\n", redir_c);
+	TRACE("A new file redirector has been added to a command \n\t " \
+		"path [%s] fd %d app %d dir %d\n",
 		redir->path, redir->fd, redir->app, redir->dir);
-#endif
 
 	cmd->file_redirectors[redir_c] = redir;
 	cmd->file_redirectors[redir_c + 1] = NULL; /* terminating null */
-#ifdef DEBUG
-	fprintf(stderr, "handle_command_redirector() - end\n");
-#endif
+	TRACEL("\n");
 }
 
-void handle_arg(const st_token_item *token, int *argc, char **argv)
+void handle_arg(const st_token *token, int *argc, char **argv)
 {
-	char *str;
-	str = (char *) malloc(strlen(token->str) + 1ul);
-	strcpy(str, token->str);
-	argv[*argc] = str;
-	argv[(*argc) + 1] = NULL;
+	argv[*argc] = strdup(token->str);
 	(*argc)++;
+}
+
+void handle_bg_process(st_command *cmd)
+{
+	cmd->flags |= CMD_BG;
+	cmd->flags &= ~CMD_BLOCKING;
 }
 
 void handle_pipe(st_command *cmd)
 {
-	int pipefd[2];
-	pipe(pipefd);
-	cmd->pipefd[1] = pipefd[1];
-	cmd->is_hidden_bg_process = 1;
+	cmd->flags |= CMD_PIPED;
 }
 
-void on_token_handle(const st_token_item *token, int *argc, char **argv,
+void on_token_handle(const st_token *token, int *argc, char **argv,
 	st_command *cmd)
 {
-#ifdef DEBUG
-	fprintf(stderr, "on_token_handle() - start token - [%s] type - [%d]\n",
-		token->str, token->type);
-#endif
+	TRACEE("Token str [%s] Type [%d]\n", token->str, token->type);
 	switch (token->type)
 	{
 		case program:
@@ -193,7 +227,7 @@ void on_token_handle(const st_token_item *token, int *argc, char **argv,
 			handle_arg(token, argc, argv);
 			break;
 		case bg_process:
-			cmd->is_bg_process = 1;
+			handle_bg_process(cmd);
 			break;
 		case separator:
 		case redirector_path: /* is handled by file_redirector case */
@@ -206,32 +240,24 @@ void on_token_handle(const st_token_item *token, int *argc, char **argv,
 			handle_pipe(cmd);
 			break;
 		default:
-			fprintf(stderr, "A non implemented token has been passed - " \
+			TRACE("A non implemented token has been passed - " \
 				"String: [%s] Type: [%d]\n", token->str, token->type);
-			sleep(1); /* Just for debug purposes */
 	}
-#ifdef DEBUG
-	fprintf(stderr, "on_token_handle() - end\n");
-#endif
+	TRACEL("\n");
 }
 
-void handle_command_tokens(const st_token_item *head,
-	const st_token_item *tail, st_command *cmd, char **argv)
+void handle_command_tokens(const st_token *head,
+	const st_token *tail, st_command *cmd, char **argv)
 {
 	int argc = 0, passed_tail = 0;
+	TRACEE("\n");
 	for (; !passed_tail; head = head->next)
 	{
 		on_token_handle(head, &argc, argv, cmd);
 		if (head == tail)
 			passed_tail = 1;
 	}
-}
-
-void check_for_pipe(st_command *cmd, const st_command *prev_cmd)
-{
-	if (!prev_cmd || prev_cmd->pipefd[1] == -1)
-		return;
-	cmd->pipefd[0] = prev_cmd->pipefd[1] - 1;
+	TRACEL("\n");
 }
 
 st_command *st_command_create_empty()
@@ -240,143 +266,227 @@ st_command *st_command_create_empty()
 	cmd->cmd_str = NULL;
 	cmd->argc = 0;
 	cmd->argv = NULL;
-	cmd->is_bg_process = 0;
-	cmd->is_hidden_bg_process = 0;
+	cmd->flags = CMD_BLOCKING;
 	cmd->file_redirectors = NULL;
 	cmd->pipefd[0] = -1;
 	cmd->pipefd[1] = -1;
-	cmd->pid = -1;
-	cmd->eid = -1;
+	cmd->pid = 0;
+	cmd->eid = 0;
 	cmd->next = NULL;
 	cmd->prev = NULL;
 	return cmd;
 }
 
-st_command *st_command_create(const st_token_item *head, st_command *prev_cmd)
+st_command *st_command_create(const st_token *head)
 {
 	int argc;
 	char **argv;
-	const st_token_item *tail = find_command_tail(head);
+	const st_token *tail = find_command_tail(head);
 	st_command *cmd = st_command_create_empty();
 	if (!head)
 		return cmd;
 
 	allocate_arguments_memory(head, tail, &argc, &argv);
 	allocate_redirectors_memory(head, tail, cmd);
-	check_for_pipe(cmd, prev_cmd);
 	handle_command_tokens(head, tail, cmd, argv);
+	assert(!argv[argc]);
 
 	cmd->argc = argc;
 	cmd->argv = argv;
 	cmd->cmd_str = form_command_string(head, tail);
-	cmd->prev = prev_cmd;
 
-#ifdef DEBUG
-	fputs("st_command_create() - New command has been created\n", stderr);
-	st_command_print(cmd);
+#ifdef _TRACE
+	TRACE("New command has been created\n");
+	st_command_print(cmd, TAB);
 #endif
 
 	return cmd;
 }
 
-st_command **st_commands_create(const st_token_item *head)
+st_command *get_tail(st_command *head)
 {
-	size_t cmdc, tokenc, i;
-	st_command **cmds;
-	const st_token_item *it = head;
-
-	/* may count more than there actually are due some non arg tokens which
-	   don't call any program */
-	cmdc = count_commands(head);
-	cmds = (st_command **) malloc((cmdc + 1) * (sizeof(st_command *)));
-
-#ifdef DEBUG
-	fprintf(stderr, "st_commands_create() - cmdc %lu\n", cmdc);
-#endif
-	for (i = 0ul; it; i++)
-	{
-		cmds[i] = st_command_create(it, i > 0ul ? cmds[i - 1ul] : NULL);
-		tokenc = count_command_tokens(it);
-		st_token_item_iterate(&it, tokenc);
-
-		/* overwrite an empty on text iteration */
-		if (cmds[i]->argc == 0ul)
-			i--;
-	}
-	cmds[i] = NULL;
-#ifdef DEBUG
-	if (cmdc - i > 0ul)
-		printf("st_command_create() - cmdc - i = %lu (amount of unused " \
-			"pointers) \n", cmdc - i);
-#endif
-
-	return cmds;
+	while (head && head->next)
+		head = head->next;
+	return head;
 }
 
-void st_command_print(const st_command *cmd)
+int is_output_piped(const st_command *cmd)
+{
+	return cmd->flags & CMD_PIPED;
+}
+
+void determine_blocking(st_command *head)
+{
+	int blocking = 0;
+	st_command *tail = NULL;
+	TRACEE("\n");
+	tail = get_tail(head);
+	for (; tail; tail = tail->prev)
+	{
+		TRACE("'%s'\n", tail->cmd_str);
+		if (!blocking && is_output_piped(tail))
+		{
+			tail->flags &= ~CMD_BLOCKING;
+			TRACE("'%s' became unblocking\n", tail->cmd_str);
+		}
+		blocking = !!(tail->flags & CMD_BLOCKING);
+	}
+	TRACEL("\n");
+}
+
+st_command *st_commands_create(const st_token *tokens)
+{
+	size_t tokenc = 0ul;
+	st_command *head = NULL, *cmd = NULL;
+
+	TRACEE("\n");
+	while (tokens)
+	{
+		cmd = st_command_create(tokens);
+		st_command_push_back(&head, cmd);
+		tokenc = count_command_tokens(tokens);
+		TRACE("New commands has been created addr %p tokenc %lu\n",
+			cmd, tokenc);
+		st_token_iterate(&tokens, tokenc);
+
+		/* drop an empty command */
+		if (cmd->argc == 0ul)
+		{
+			st_command_erase_item(&head, cmd);
+			cmd = NULL;
+		}
+	}
+	determine_blocking(head);
+	TRACEL("\n");
+
+	return head;
+}
+
+void *st_command_traverse(st_command *cmd, callback_t callback, void *userdata)
+{
+	void *res;
+	if (!cmd)
+		return NULL;
+	res = callback(cmd, userdata);
+	if (res)
+		return res;
+	return st_command_traverse(cmd->next, callback, userdata);
+}
+
+#define PREF (prefix ? prefix : "")
+
+/* Single prefix print */
+#define P_PRINT(...) \
+	do { \
+		printf("%s", PREF); \
+		printf(__VA_ARGS__); \
+	} while (0);
+
+/* Double prefix print */
+#define PP_PRINT(...) \
+	do { \
+		printf("%s%s", PREF, PREF); \
+		printf(__VA_ARGS__); \
+	} while (0);
+
+void print_literal_flags(const st_command *cmd, const char *prefix)
+{
+#define CONTAINS(var) \
+	if (cmd->flags & (var)) \
+		P_PRINT("%s", #var)
+
+	CONTAINS(CMD_BG);
+	CONTAINS(CMD_PIPED);
+	CONTAINS(CMD_BLOCKING);
+
+#undef CONTAINS
+}
+
+void st_command_print(const st_command *cmd, const char *prefix)
 {
 	size_t i;
 	st_file_redirector **redir = cmd->file_redirectors;
-	printf("\tcmd_str: [%s]\n", cmd->cmd_str);
-	printf("\targc: %d\n", cmd->argc);
+	P_PRINT("cmd addr %p\n", (void *) cmd);
+	P_PRINT("cmd_str: [%s]\n", cmd->cmd_str);
+	P_PRINT("argc: %d\n", cmd->argc);
 
-	printf("\targv: [ \n");
+	P_PRINT("argv: [ \n");
 	for (i = 0ul; cmd->argv[i]; i++)
-		printf("\t\t[%s], \n", cmd->argv[i]);
-	printf("\t\t[%s]\n\t]\n", cmd->argv[i]);
+		PP_PRINT("[%s], \n", cmd->argv[i]);
+	PP_PRINT("[%s]\n", cmd->argv[i]);
+	P_PRINT("]\n");
 
-	printf("\tis_bg_process: [%d]\n", cmd->is_bg_process);
-	printf("\tpid: [%d]\n", cmd->pid);
-	printf("\teid: [%d]\n", cmd->eid);
+	P_PRINT("flags: ");
+	print_flags((void *) &cmd->flags, sizeof(cmd->flags));
+	P_PRINT("\n");
+	print_literal_flags(cmd, prefix);
+	P_PRINT("\n");
 
-	printf("\tfile_redirectors: [ \n");
+	P_PRINT("pid: [%d]\n", cmd->pid);
+	P_PRINT("eid: [%d]\n", cmd->eid);
+
+	P_PRINT("file_redirectors: [ \n");
 	for (i = 0ul; redir[i]; i++)
 	{
-		printf("\t\t[");
+		PP_PRINT("[");
 		st_redirector_print(redir[i]);
-		printf("],\n");
+		PP_PRINT("],\n");
 	}
-	printf("\t\t%p\n\t]\n", (void *) redir[i]);
-	printf("\tpipefd: %d %d\n", cmd->pipefd[0], cmd->pipefd[1]);
-	printf("\tNext: %p Prev: %p\n", (void *) cmd->next, (void *) cmd->prev);
+	PP_PRINT("%p\n", (void *) redir[i]);
+	P_PRINT("]\n");
+	P_PRINT("pipefd: %d %d\n", cmd->pipefd[0], cmd->pipefd[1]);
+	P_PRINT("Next: %p Prev: %p\n", (void *) cmd->next, (void *) cmd->prev);
 }
+#undef PP_PRINT
+#undef PP_PRINT
+#undef PREF
 
 void argv_delete(char **argv)
 {
 	int i = 0;
+	TRACEE("\n");
 	if (!argv)
 		return;
 	for (; argv[i]; i++)
 		free(argv[i]);
+	TRACEL("\n");
 }
 
 void st_redirectors_delete(st_redirector **redirectors)
 {
 	size_t i = 0ul;
+	TRACEE("\n");
 	if (!redirectors)
 		return;
 	for (; redirectors[i]; i++)
 		st_redirector_delete(redirectors[i]);
 	free(redirectors);
+	TRACEL("\n");
 }
 
 void st_command_delete(st_command *cmd)
 {
+	TRACEE("cmd addr %p\n", (void *) cmd);
 	if (!cmd)
+	{
+		TRACEL("cmd is null \n");
 		return;
+	}
 	free_if_exists(cmd->cmd_str);
 	argv_delete(cmd->argv);
 	st_redirectors_delete(cmd->file_redirectors);
+	/* fds are closed in execute_commands */
+	release_eid(cmd->eid);
 	free(cmd);
+	TRACEL("\n");
 }
 
-void st_commands_delete(st_command **cmds)
+void st_commands_clear(st_command *head)
 {
-	size_t i = 0ul;
-	if (!cmds)
+	if (!head)
 		return;
-	for (; cmds[i]; i++)
-		st_command_delete(cmds[i]);
+	st_commands_clear(head->next);
+	st_command_delete(head);
 }
 
 int output_exec_result(int status)
@@ -386,21 +496,9 @@ int output_exec_result(int status)
 		/* if (WIFEXITED(status)) */
 		/* 	printf("Terminated with %d", WEXITSTATUS(status)); */
 		if (WIFSIGNALED(status))
-			printf("Signal code %d", WTERMSIG(status));
+			return WTERMSIG(status);
 	}
-	return status != 0;
-}
-
-char *get_exec_result(char *buf, size_t len, int status)
-{
-	if (status != 0)
-	{
-		if (WIFEXITED(status))
-			snprintf(buf, len, "Terminated with %d", WEXITSTATUS(status));
-		if (WIFSIGNALED(status))
-			snprintf(buf, len, "Signal code %d", WTERMSIG(status));
-	}
-	return buf;
+	return 0;
 }
 
 st_dll_string *find_higher(st_dll_string *to_iterate, st_dll_string *to_insert)
@@ -451,15 +549,24 @@ void handle_cd(const st_command *cmd)
 		perror("Failed to change directory");
 }
 
+#define REDIRECT(from, to) \
+	if (dup2(from, to) == -1) \
+	{ \
+		TRACE("dup2(%d, %d): ", from, to); \
+		perror(""); \
+		return 1; \
+	}
+
 int redirect_file_stream(st_command *cmd)
 {
 	int fd;
 	size_t i;
 	st_redirector **redic = cmd->file_redirectors;
+	TRACEE("\n");
 	for (i = 0ul; redic[i]; i++)
 	{
-#ifdef DEBUG
-		fprintf(stderr, "redirect_file_stream() - new iteration. redirector: ");
+#ifdef _TRACE
+		TRACE("New iteration. redirector: ");
 		st_redirector_print(redic[i]);
 		putchar(10);
 #endif
@@ -470,192 +577,340 @@ int redirect_file_stream(st_command *cmd)
 			0666);
 		if (fd == -1)
 		{
-			fprintf(stderr, "redirect_file_stream(%s): ", redic[i]->path);
-			perror("Failed to open");
+			TRACE("Failed to open '%s': ", redic[i]->path);
+			perror("");
 			return 1;
 		}
 		/* redirect a stream */
-		dup2(fd, redic[i]->fd);
+		REDIRECT(fd, redic[i]->fd);
+		TRACE("Redirected a file stream (%d) to %d\n", fd, redic[i]->fd);
 	}
+	TRACEL("\n");
 	return 0;
 }
-
-#define ERROR() \
-	if (res == -1) \
-	{ \
-		perror("dup2"); \
-		return 1; \
-	}
 
 int redirect_process_stream(st_command *cmd)
 {
-	int res = 0;
-	if (cmd->pipefd[0] != -1)
-		res = dup2(cmd->pipefd[0], 0);
-	ERROR();
-	if (cmd->pipefd[1] != -1)
-		res = dup2(cmd->pipefd[1], 1);
-	ERROR();
+	int i, fd;
+	TRACEE("\n");
+	for (i = 0; i < 2; i++)
+	{
+		fd = cmd->pipefd[i];
+		if (fd != -1)
+		{
+			REDIRECT(fd, i);
+			assert(!i ? cmd->prev : cmd->next);
+			TRACE("Substitute %s's fd with %d, %s of '%s'\n",
+				!i ? "stdin" : "stdout",
+				cmd->pipefd[i],
+				!i ? "stdout" : "stdin",
+				!i ? cmd->prev->cmd_str : cmd->next->cmd_str);
+		}
+	}
+	TRACEL("\n");
 	return 0;
 }
-#undef ERROR
 
 int redirect_streams(st_command *cmd)
 {
 	if (cmd->file_redirectors && redirect_file_stream(cmd))
-		return 1;
+		return -1;
 	if ((cmd->pipefd[0] != -1 || cmd->pipefd[1] != -1) &&
 		redirect_process_stream(cmd))
-		return 1;
+		return -1;
 	return 0;
+}
+
+void open_pipe(st_command *cmd)
+{
+	int pipefd[2] = {0};
+	TRACEE("\n");
+	if (cmd->flags & CMD_PIPED)
+	{
+		pipe(pipefd);
+		assert(cmd->next);
+		cmd->next->pipefd[0] = pipefd[0];
+		cmd->pipefd[1] = pipefd[1];
+		TRACE("cmd->next->pipefd[0] = %d cmd->pipdfd[1] = %d\n",
+			cmd->next->pipefd[0], cmd->pipefd[1]);
+	}
+	TRACEL("\n");
+}
+
+void close_pipe_fd(int pipefd[2])
+{
+	TRACEE("Pipe: %d %d\n", pipefd[0], pipefd[1]);
+	if (pipefd[0] != -1)
+	{
+		CLOSE_FD(pipefd[0]);
+		CLOSE_FD(pipefd[1]);
+	}
+	TRACEL("\n");
+}
+
+void close_pipe_cmd(st_command *cmd)
+{
+	int pipefd[2];
+	TRACEE("'%s'\n", cmd->cmd_str);
+	assert(cmd->prev);
+	pipefd[0] = cmd->pipefd[0];
+	pipefd[1] = cmd->prev->pipefd[1];
+	cmd->pipefd[0] = -1;
+	cmd->prev->pipefd[1] = -1;
+	close_pipe_fd(pipefd);
+	TRACEL("\n");
+}
+
+void close_opp_pipe_side(const st_command *cmd)
+{
+	const int *fds = cmd->pipefd;
+	TRACEE("cmd '%s' pipefd[0] %d pipefd[1] %d\n", cmd->cmd_str,
+		fds[0], fds[1]);
+	if (fds[0] != -1)
+		CLOSE_FD(fds[0] + 1);
+	if (fds[1] != -1)
+		CLOSE_FD(fds[1] - 1);
+	TRACEL("\n");
+}
+
+pid_t cmd_fork(st_command *cmd)
+{
+	pid_t pid;
+	TRACEE("\n");
+	pid = fork();
+	if (pid == -1)
+	{
+		TRACE("Failed to fork: ");
+		perror("");
+	}
+	else if (pid == 0)
+	{
+		close_opp_pipe_side(cmd);
+		if (redirect_streams(cmd) == -1)
+		{
+			TRACE("'%s' exit\n", cmd->cmd_str);
+			exit(1);
+		}
+		TRACE("execvp '%s'\n", cmd->cmd_str);
+		execvp(cmd->argv[0], cmd->argv);
+		perror(cmd->cmd_str);
+		exit(1);
+	}
+	TRACEL("\n");
+	return pid;
 }
 
 pid_t call_command(st_command *cmd)
 {
-	pid_t pid = fork();
-	if (pid == -1)
-		perror("Failed to fork");
-	else if (pid == 0)
-	{
-		cmd->pid = pid;
-		if (redirect_streams(cmd))
-		{
-			fprintf(stderr, "call_command() - '%s' exit on " \
-				"redirect_streams()", cmd->cmd_str);
-			exit(1);
-		}
-		execvp(cmd->argv[0], cmd->argv);
-		perror(cmd->cmd_str);
-		return -1;
-	}
-	return pid;
-}
+	TRACEE("\n");
 
-void close_used_descriptors(st_command *cmd)
-{
-	int fd = cmd->pipefd[0];
-	if (fd == -1)
-		return;
-	assert(cmd->prev);
-	close(fd);
-	close(fd - 1);
-	cmd->pipefd[0] = -2;
-	cmd->prev->pipefd[0] = -2;
+	open_pipe(cmd);
+	cmd->pid = cmd_fork(cmd);
+
+	TRACEL("pid %d\n", cmd->pid);
+	return cmd->pid;
 }
 
 pid_t handle_process(st_command *cmd)
 {
-	int status = 0, res;
-#ifdef DEBUG
-	fprintf(stderr, "--------handle_process() - start cmd [%s]\n",
-		cmd->cmd_str);
-#endif
+	TRACEE("cmd [%s] addr %p\n", cmd->cmd_str, (void *) cmd);
 
-	if (cmd->is_bg_process)
-		cmd->eid =acquire_eid();
+	if (cmd->flags & CMD_BG)
+		cmd->eid = acquire_eid();
 	cmd->pid = call_command(cmd);
 	if (cmd->pid == -1)
 	{
-#ifdef DEBUG
-	fprintf(stderr, "--------handle_process() - end by if pid == -1\n");
-#endif
+		TRACEL("if pid == -1\n");
 		st_command_delete(cmd);
 		return 0;
 	}
-	if (!cmd->is_bg_process && !cmd->is_hidden_bg_process)
+	if (cmd->flags & CMD_BLOCKING)
 	{
-		wait4(cmd->pid, &status, 0, NULL);
-		res = output_exec_result(status);
-		if (res)
-			putchar(10);
+		blocking_processes++;
+		TRACE("blocking_processes++ %lu\n", blocking_processes);
 	}
-	else
-		st_command_push_back(&cmds_head, cmd);
-	close_used_descriptors(cmd);
+	if (cmd->flags == CMD_BLOCKING)
+	{
+		/* as soon as possible (after launching a piped process) disallow
+		   main process to work while pipe's work isn't terminated */
+		TRACE("continue_main_process = 0\n");
+		continue_main_process = 0;
 
-#ifdef DEBUG
-	fprintf(stderr, "--------handle_process() - end\n");
-#endif
+		if (zombie_guard)
+			TRACE("Wait for zombie guard\n");
+		WAIT_FOR(zombie_guard);
+		RAISE_ZGUARD();
+		if (cmd->pipefd[0] != -1)
+			close_pipe_cmd(cmd);
+		DROP_ZGUARD();
+
+		WAIT_FOR(!continue_main_process);
+	}
+	TRACEL("\n");
 	return cmd->pid;
 }
 
 void st_command_push_back(st_command **head, st_command *new_item)
 {
+	st_command *it;
+	TRACEE("new item %p\n", (void *) new_item);
 	if (!(*head))
 		*head = new_item;
 	else
 	{
-		st_command *it = *head;
+		it = *head;
 		while (it->next)
 			it = it->next;
 		it->next = new_item;
 		new_item->prev = it;
+		TRACE("it->next = %p new_item->prev = %p\n", (void *) new_item,
+			(void *) it);
 	}
+	TRACEL("\n");
 }
 
-st_command *st_command_find(st_command *head, pid_t pid)
+st_command *st_command_find(st_command *head, callback_t callback,
+	void *userdata)
 {
-	for (; head; head = head->next)
-	{
-		if (head->pid == pid)
-			return head;
-	}
-	return NULL;
+	if (!head)
+		return NULL;
+	if (*(int *) callback(head, userdata))
+		return head;
+	return st_command_find(head->next, callback, userdata);
 }
 
 int st_command_erase_item(st_command **head, st_command *item)
 {
+	TRACEE("head %p *head %p item %p \n",
+		(void *) head, (void *) *head, (void *) item);
 	if (!(*head) || !item)
+	{
+		TRACEL("some ptr is null\n");
 		return 0;
+	}
 	if (*head == item)
 	{
+		TRACE("Move head\n");
 		*head = (*head)->next;
 		if (*head)
-			(*head)->prev = NULL;
+			(*head)->prev = item->prev;
 	}
 	else
 	{
-		item->prev->next = item->next;
-		item->next->prev = item->prev;
+		TRACE("Edit item's prev and next ptrs\n");
+		if (item->prev)
+			item->prev->next = item->next;
+		if (item->next)
+			item->next->prev = item->prev;
 	}
 	st_command_delete(item);
+	TRACEL("\n");
 	return 1;
 }
 
-pid_t execute_command(st_command *cmd)
+int execute_commands()
 {
-	pid_t pid = 0;
-	if (strcmp(cmd->argv[0], "cd") == 0)
-		handle_cd(cmd);
-	else if (strcmp(cmd->argv[0], "export") == 0)
-		handle_export(cmd);
-	else if (strcmp(cmd->argv[0], "exit") == 0)
-		pid = -1;
-	else
-		pid = handle_process(cmd);
-	return pid;
+	int res;
+	st_command *cmd;
+	TRACEE("\n");
+	for (; recent_cmds; recent_cmds = recent_cmds->next)
+	{
+		cmd = recent_cmds;
+		if (!strcmp(cmd->argv[0], "cd"))
+			handle_cd(cmd);
+		else if (!strcmp(cmd->argv[0], "export"))
+			handle_export(cmd);
+		else if (!strcmp(cmd->argv[0], "exit"))
+			res = -1;
+		else
+			res = handle_process(cmd);
+
+		/* close a pipe as soon as its second process starts */
+		if (cmd->pipefd[0] != -1)
+			close_pipe_cmd(cmd);
+
+		if (res == -1)
+		{
+			TRACEL("res -1\n");
+			return -1;
+		}
+	}
+	TRACEL("\n");
+	return 0;
 }
 
-void check_zombies()
+void clean_zombie_data(st_command *cmd)
+{
+	TRACEE("About to clean up '%s'\n", cmd->cmd_str);
+	if (cmd->flags & CMD_BG)
+		form_post_execution_msg(cmd);
+	st_command_erase_item(&cmds_head, cmd);
+	TRACEL("A command has been erased from the list.\n");
+}
+
+void *compare_pid(st_command *cmd, void *pid)
+{
+	int res = cmd->pid == *(pid_t *) pid;
+	return res ? cmd : NULL;
+}
+
+void print_term_msg_sig(const st_command *cmd, int no)
+{
+	if (no == 0)
+		return;
+	/* TODO write an actual sig title instead of sig number */
+	printf(SHELL ": Job %d, '%s' terminated by signal %d\n",
+		cmd->eid, cmd->cmd_str, no);
+}
+
+void decrease_blocking_processes()
+{
+	assert(blocking_processes > 0ul);
+	blocking_processes--;
+	TRACE("blocking processes-- %lu\n", blocking_processes);
+}
+
+void handle_blocking(st_command *cmd)
+{
+	if (!(cmd->flags & CMD_BLOCKING))
+		return;
+	decrease_blocking_processes();
+	TRACE("pid %d cmd '%s' Wait bprcs (%lu) cont mprcs (%d) zguard (%d)\n",
+		cmd->pid, cmd->cmd_str, blocking_processes,
+		continue_main_process, zombie_guard);
+	WAIT_FOR((!continue_main_process && blocking_processes) || zombie_guard);
+	continue_main_process = 1;
+}
+
+void handle_exec_res(st_command *cmd, int status)
+{
+	int code;
+	TRACEE("pid %d cmd '%s'\n", cmd->pid, cmd->cmd_str);
+	code = output_exec_result(status);
+	print_term_msg_sig(cmd, code);
+	handle_blocking(cmd);
+	RAISE_ZGUARD();
+	TRACE("Child process clean up\n");
+	clean_zombie_data(cmd);
+	DROP_ZGUARD();
+	TRACEL("\n");
+}
+
+void check_zombie()
 {
 	int status;
-	char buf[512];
-	pid_t pid;
-	st_command *cmd;
-	while ((pid = wait4(-1, &status, WNOHANG, NULL)) > 0)
-	{
-		cmd = st_command_find(cmds_head, pid);
-		assert(cmd);
-		get_exec_result(buf, sizeof(buf), status);
-		form_post_execution_msg(cmd);
-		status = st_command_erase_item(&cmds_head, cmd);
-#ifdef DEBUG
-		fprintf(stderr, "check_zombies() - A command has ");
-		if (!status)
-			fprintf(stderr, "not");
-		fprintf(stderr, "been erased from the list.\n");
-#endif
-	}
+	pid_t pid = wait4(-1, &status, WNOHANG, NULL);
+	st_command *cmd = (st_command *) st_command_traverse(cmds_head,
+		compare_pid, (void *) &pid);
+	assert(pid != -1 && cmd);
+	TRACEE("pid %d cmd '%s'\n", pid, cmd->cmd_str);
+
+	if (zombie_guard)
+		TRACE("pid %d waiting for guard %d\n", pid, zombie_guard);
+	WAIT_FOR(zombie_guard);
+	handle_exec_res(cmd, status);
+
+	TRACEL("\n");
 }
 
 void form_post_execution_msg(const st_command *cmd)
@@ -663,16 +918,16 @@ void form_post_execution_msg(const st_command *cmd)
 	char *target = post_execution_msg;
 	size_t maxlen = sizeof(post_execution_msg);
 	size_t len = strlen(target);
-
-	/* a bg process can have eid -1 in case of pipe line and message about
-	   its ending shouldn't be shown */
-	if (cmd->eid == -1)
-		return;
+	TRACEE("\n");
 
 	if (len > 0ul)
 		len += snprintf(target + len, maxlen, "\n");
+
+	/* TODO add signal code before this msg if there was one */
+	/* like 'msh: Job N, 'sleep 15 &' terminated by signal SIGABRT (Abort)' */
 	snprintf(target + len, maxlen, "msh: Job %d, '%s' has ended",
 		cmd->eid, cmd->cmd_str);
+	TRACEL("\n");
 }
 
 void clear_post_execution_msg()
@@ -682,5 +937,28 @@ void clear_post_execution_msg()
 
 void st_commands_free()
 {
-	st_commands_delete(&cmds_head);
+	st_commands_clear(cmds_head);
+}
+
+void print_cmds_head()
+{
+	st_command *it = cmds_head;
+	TRACEE("\n");
+	for (; it; it = it->next)
+	{
+		st_command_print(it, "\t");
+		putchar(10);
+	}
+	TRACEL("\n");
+}
+
+void st_command_pass_ownership(st_command *cmds)
+{
+	TRACEE("cmds addr %p\n", (void *) cmds);
+	st_command_push_back(&cmds_head, cmds);
+	recent_cmds = cmds;
+/* #ifdef _TRACE */
+/* 	print_cmds_head(); */
+/* #endif */
+	TRACEL("\n");
 }

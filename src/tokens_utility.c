@@ -1,12 +1,32 @@
-#include "st_token_item.h"
+#include "mt_errno.h"
+#include "st_redirector.h"
+#include "st_token.h"
 #include "tokens_utility.h"
 #include "utility.h"
-#include "mt_errno.h"
+#include "log.h"
 
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#define ERR(code, msg, token) \
+	do \
+	{ \
+		sprintf(mt_errstr, msg, token); \
+		return code; \
+	} while (0)
+
+#define ERR_MSQUO(token) \
+	ERR(SC_MSQUO, "Mismatching quotes near '%s'.", token)
+#define ERR_MSRTK(token) \
+	ERR(SC_MSRTK, "Syntax error near unexpected token '%s'.", token)
+#define ERR_USPFD(token) \
+	ERR(SC_USPFD, "Unsupported file descriptor near '%s'.", token)
+#define ERR_MSRDT(token) \
+	ERR(SC_MSRDT, "Mismatching redirector token near '%s'.", token)
+#define ERR_MSREP(token) \
+	ERR(SC_MSREP, "Missing redirector path near '%s'.", token)
 
 char is_special_character_ch(char c)
 {
@@ -15,9 +35,9 @@ char is_special_character_ch(char c)
 		'<', '>', '`', '|',
 		'(', ')'
 	};
-	size_t i;
+	size_t i = 0ul;
 
-	for (i = 0ul; i < sizeof(arr); i++)
+	for (; i < sizeof(arr); i++)
 	{
 		if (arr[i] == c)
 			return 1;
@@ -33,9 +53,9 @@ char is_special_character_type(int type)
 		process_redirector,
 		separator
 	};
-	size_t i;
+	size_t i = 0ul;
 
-	for (i = 0ul; i < sizeof(types); i++)
+	for (; i < sizeof(types) / sizeof(int); i++)
 	{
 		if (types[i] == type)
 			return 1;
@@ -47,35 +67,36 @@ int is_hard_delim_str(const char *str)
 {
 	/* modify the row's length in case of adding a longer string
 	   (don't forget about the terminating zero) */
-	char hard_delims[][3] = {
+#define LEN 3
+	char hard_delims[][LEN] = {
 		"|",
 		";",
 		"&",
 		/* "&&", */
 		/* "||" */
 	};
-	size_t i;
+	size_t i = 0ul;
 
-	for (i = 0ul; i < sizeof(hard_delims); i++)
+	for (; i < sizeof(hard_delims) / LEN; i++)
 		if (!strcmp(str, hard_delims[i]))
 			return 1;
 	return 0;
 }
 
-int st_token_item_is_hard_delim(const st_token_item *item)
+int is_hard_delim(const st_token *item)
 {
-	const char hard_delims[] = {
-		(char) process_redirector,
-		(char) separator,
-		(char) bg_process,
+	const int hard_delims[] = {
+		process_redirector,
+		separator,
+		bg_process,
 		/*
 		and_op,
 		or_op
 		*/
 	};
-	size_t i;
+	size_t i = 0ul;
 
-	for (i = 0ul; i < sizeof(hard_delims); i++)
+	for (; i < sizeof(hard_delims) / sizeof(int); i++)
 	{
 		if ((char) item->type == hard_delims[i])
 			return 1;
@@ -83,14 +104,13 @@ int st_token_item_is_hard_delim(const st_token_item *item)
 	return 0;
 }
 
-st_token_item *st_token_item_find_hard_delim(const st_token_item *head)
+st_token *find_hard_delim(const st_token *item)
 {
-	for (; head; head = head->next)
-	{
-		if (st_token_item_is_hard_delim(head))
-			return (st_token_item *) head;
-	}
-	return NULL;
+	if (!item)
+		return NULL;
+	if (is_hard_delim(item))
+		return (st_token *) item;
+	return find_hard_delim(item->next);
 }
 
 char *read_token(const char *str, char *last_ch, size_t *read_bytes,
@@ -99,11 +119,8 @@ char *read_token(const char *str, char *last_ch, size_t *read_bytes,
 	size_t i;
 	char *token, buf[4096];
 	int backslash = 0;
-#ifdef DEBUG
-	fprintf(stderr, "--------read_token() start str [%s] last_ch [%c] " \
-		"read_bytes [%lu] inside_quotes [%d]\n", str, *last_ch, *read_bytes,
-		*inside_quotes);
-#endif
+	TRACEE("Passed str [%s] last_ch [%c] read_bytes [%lu] inside_quotes " \
+		"[%d]\n", str, *last_ch, *read_bytes, *inside_quotes);
 
 	*read_bytes = 0ul;
 	for (i = 0ul; str && *str != '\0'; str++, i++, (*read_bytes)++)
@@ -138,23 +155,20 @@ char *read_token(const char *str, char *last_ch, size_t *read_bytes,
 	}
 
 	buf[i] = '\0';
-	token = (char *) malloc(i + 1);
-	strcpy(token, buf);
-#ifdef DEBUG
-	fprintf(stderr, "--------read_token() end token [%s] last_ch [%c] " \
-		"read_bytes [%lu] inside_quotes [%d]\n", token, *last_ch, *read_bytes,
-		*inside_quotes);
-#endif
+	token = strdup(buf);
+	TRACEL("Token [%s] last_ch [%c] read_bytes [%lu] inside_quotes [%d]\n",
+		token, *last_ch, *read_bytes, *inside_quotes);
 	return token;
 }
 
-st_token_item *form_token_list(const char *str)
+st_token *form_token_list(const char *str)
 {
-	st_token_item *head = NULL, *item;
-	char *token, last_ch;
-	size_t read_bytes;
 	int exp_sp = 0;
+	char *token, last_ch = '\0';
+	size_t read_bytes = 0ul;
+	st_token *head = NULL, *item;
 
+	TRACEE("Str [%s]\n", str);
 	while (str)
 	{
 		str += skip_spaces(str);
@@ -166,93 +180,94 @@ st_token_item *form_token_list(const char *str)
 			break;
 		str += read_bytes;
 
-		item = st_token_item_create(token);
-		st_token_item_push_back(&head, item);
+		item = st_token_create(token);
+		st_token_push_back(&head, item);
 		free(token);
 
 		if (*str == '\0')
 			break;
 	}
+	TRACEL("\n");
 
 	return head;
 }
 
-int is_quote(const st_token_item *item)
+void remove_quotes(st_token **head)
 {
-	if (!item)
-		return 0;
-	return strcmp(item->str, "\"") == 0;
-}
+	st_token *it = *head, *tmp;
 
-void remove_quotes(st_token_item **head)
-{
-	st_token_item *it = *head, *tmp;
+	TRACEE("\n");
 	while (it)
 	{
-		if (is_quote(it))
+		if (!strcmp(it->str, "\""))
 		{
 			tmp = it->next;
-			st_token_item_remove(head, it);
+			st_token_remove(head, it);
 			it = tmp;
 		}
 		else
 			it = it->next;
 	}
+	TRACEL("\n");
 }
 
-int can_be_unified(const st_token_item *item)
+int can_be_unified(const st_token *item)
 {
-	const char tokens[][2] = {
-		"&", "|", ">",
+	const char tokens[] = {
+		'&', '|', '>',
 	};
-	size_t i;
+	size_t i = 0ul;
 
-	for (i = 0ul; i < sizeof(tokens); i++)
+	for (; i < sizeof(tokens); i++)
 	{
-		if (!strcmp(item->str, tokens[i]))
+		if (item->str[0] == tokens[i] && item->str[1] == '\0')
 			return 1;
 	}
 	return 0;
 }
 
-void unify_multiple_tokens(st_token_item *head)
+void unify_multiple_tokens(st_token *head)
 {
+	TRACEE("\n");
 	for (; head && head->next; head = head->next)
 	{
 		if (strcmp(head->str, head->next->str))
 			continue;
 		if (can_be_unified(head) && can_be_unified(head->next))
 		{
+			TRACE("Unify %s with %s\n",
+				head->str, head->next->str);
 			head->str = (char *) malloc(3);
-			head->str[0] = *head->next->str;
+			head->str[0] = *head->str;
 			head->str[1] = *head->next->str;
 			head->str[2] = '\0';
-			st_token_item_remove(&head, head->next);
+			st_token_remove(&head, head->next);
 		}
 	}
+	TRACEL("\n");
 }
 
-int analyze_type(const st_token_item *item)
+int analyze_type(const st_token *item)
 {
-	if (strcmp(item->str, "&") == 0)
+	if (!strcmp(item->str, "&"))
 		return bg_process;
-	else if (strcmp(item->str, ";") == 0)
+	else if (!strcmp(item->str, ";"))
 		return separator;
 	else if (
-		strcmp(item->str, "<") == 0 ||
-		strcmp(item->str, ">") == 0 ||
-		strcmp(item->str, ">>") == 0)
+		!strcmp(item->str, "<") ||
+		!strcmp(item->str, ">") ||
+		!strcmp(item->str, ">>"))
 		return file_redirector;
-	else if (strcmp(item->str, "|") == 0)
+	else if (!strcmp(item->str, "|"))
 		return process_redirector;
-	/* else if (strcmp(item->str, "||") == 0) */
+	/* else if (!strcmp(item->str, "||")) */
 	/* 	return or_op; */
-	/* else if (strcmp(item->str, "&&") == 0) */
+	/* else if (!strcmp(item->str, "&&")) */
 	/* 	return and_op; */
 	/* Probably won't be supported */
-	/* else if (strcmp(item->str, "(") == 0) */
+	/* else if (!strcmp(item->str, "(")) */
 	/* 	return unknown; */
-	/* else if (strcmp(item->str, ")") == 0) */
+	/* else if (!strcmp(item->str, ")")) */
 	/* 	return unknown; */
 	else
 		return arg;
@@ -261,19 +276,19 @@ int analyze_type(const st_token_item *item)
 void analyze_redirector(const char *str, int *fd, int *app, void *dir_v)
 {
 	int *dir = (int *) dir_v;
-	if (strcmp(str, "<") == 0)
+	if (!strcmp(str, "<"))
 	{
 		*fd = 0; /* stdin */
 		*app = 0;
 		*dir = rd_in;
 	}
-	else if (strcmp(str, ">") == 0)
+	else if (!strcmp(str, ">"))
 	{
 		*fd = 1; /* stdout */
 		*app = 0;
 		*dir = rd_out;
 	}
-	else if (strcmp(str, ">>") == 0)
+	else if (!strcmp(str, ">>"))
 	{
 		*fd = 1; /* stdout */
 		*app = 1;
@@ -281,26 +296,23 @@ void analyze_redirector(const char *str, int *fd, int *app, void *dir_v)
 	}
 }
 
-void setup_redirector(st_token_item *item)
+void setup_redirector(st_token *item)
 {
-	char *redir_arg;
 	st_redirector *redir = st_redirector_create_empty();
 
 	/* use 'if' instead of 'assert' because syntax control is not yet done */
 	if (item->next)
-	{
-		redir_arg = (char *) malloc(strlen(item->next->str) + 1);
-		redir->path = strcpy(redir_arg, item->next->str);
-	}
+		redir->path = strdup(item->next->str);
 	analyze_redirector(item->str, &redir->fd, &redir->app, &redir->dir);
 	assert(redir->dir != rd_ukw);
 
 	item->redir = redir;
 }
 
-void analyze_token_types(st_token_item *head)
+void analyze_token_types(st_token *head)
 {
 	int type, last_type, expr_tokens = 0;
+	TRACEE("\n");
 	for (; head; head = head->next)
 	{
 		type = analyze_type(head);
@@ -309,28 +321,20 @@ void analyze_token_types(st_token_item *head)
 			if (expr_tokens == 0)
 			{
 				type = program;
-#ifdef DEBUG
-				fprintf(stderr, "analyze_token_types() - New expression is " \
-					"being analyzed\n");
-#endif
+				TRACE("New expression is being analyzed\n");
 			}
 			else if (last_type == file_redirector)
 			{
 				type = redirector_path;
-#ifdef DEBUG
-				fprintf(stderr, "analyze_token_types() - A redirector path " \
-					"has been found - [%s]\n", head->str);
-#endif
+				TRACE("A redirector path has been found - [%s]\n", head->str);
 			}
 		}
 		else if (type == file_redirector)
 			setup_redirector(head);
 		else if (is_hard_delim_str(head->str))
 		{
-#ifdef DEBUG
-			fprintf(stderr, "analyze_token_types() - Last expression is " \
-				"formed up from %d tokens\n", expr_tokens);
-#endif
+			TRACE("Last expression is formed up from %d tokens\n",
+				expr_tokens);
 			expr_tokens = -1; /* new expression reading must start with 0 */
 		}
 
@@ -338,78 +342,90 @@ void analyze_token_types(st_token_item *head)
 		last_type = type;
 		expr_tokens++;
 	}
-#ifdef DEBUG
 	if (expr_tokens > 0)
-		printf("Last expression is formed up from %d tokens\n", expr_tokens);
-#endif
+		TRACE("Last expression is formed up from %d tokens\n", expr_tokens);
+	TRACEL("\n");
 }
 
-int check_quotes(const st_token_item *head)
+int is_quote(st_token *item, void *data)
 {
-	size_t count;
-	count = st_token_item_count(head, &is_quote);
-	return (count % 2ul) == 1ul ? SC_MSQUO : MT_OK;
+	UNUSED(data);
+	return item->str[0] == '\'' && !item->str[1];
 }
 
-int is_reserved(const st_token_item *item)
+int check_quotes(const st_token *head)
+{
+	size_t c;
+	TRACEE("\n");
+	c = st_token_count((st_token *) head, &is_quote, NULL);
+	TRACEL("Count %lu\n", c);
+	if (c % 2ul == 1ul)
+		ERR_MSQUO(head->str);
+	return MT_OK;
+}
+
+int is_reserved(const st_token *item)
 {
 	if (!item)
 		return 0;
 	return
-		strcmp(item->str, "|")  == 0 ||
-		strcmp(item->str, "&")  == 0 ||
-		strcmp(item->str, ";")  == 0 ||
-		/* strcmp(item->str, "(")  == 0 || */
-		/* strcmp(item->str, ")")  == 0 || */
-		strcmp(item->str, "<")  == 0 ||
-		strcmp(item->str, ">")  == 0 ||
-		strcmp(item->str, ">>") == 0;
-		/* strcmp(item->str, "||") == 0 || */
-		/* strcmp(item->str, "&&") == 0; */
+		!strcmp(item->str, "|") ||
+		!strcmp(item->str, "&") ||
+		!strcmp(item->str, ";") ||
+		/* !strcmp(item->str, "(") || */
+		/* !strcmp(item->str, ")") || */
+		!strcmp(item->str, "<") ||
+		!strcmp(item->str, ">") ||
+		!strcmp(item->str, ">>");
+		/* !strcmp(item->str, "||")|| */
+		/* !strcmp(item->str, "&&"); */
 }
 
-int check_reserved_tokens(const st_token_item *head)
+int check_reserved_tokens(const st_token *head)
 {
-	size_t i = 0ul;
 	int reserved;
-	for (; head && head->next; head = head->next, i++)
+	size_t i = 0ul;
+	TRACEE("\n");
+	for (; head; head = head->next, i++)
 	{
 		/* ignore ';' in this case, it's a standalone token */
-		reserved = strcmp(head->str, ";") != 0 && is_reserved(head);
-		if (strcmp(head->str, "&") == 0 && strcmp(head->next->str, ";") == 0)
+		reserved = is_reserved(head) && strcmp(head->str, ";") != 0;
+		TRACE("Token '%s'\n", head->str);
+		if (reserved && i == 0ul)
+			ERR_MSRTK(head->str);
+		if (!reserved)
+			continue;
+		if (!head->next)
+			break;
+
+		/* No reserved token can be nearby any other one, except semi colon */
+		if (!strcmp(head->str, "&") && !strcmp(head->next->str, ";"))
 		{
+			TRACE("Skip [%s]\n", head->str);
 			head = head->next;
 			continue;
 		}
-		if ((reserved && i == 0ul) || (reserved && is_reserved(head->next)))
-		{
-			sprintf(mt_errstr, "Syntax error near unexpected token '%s'.",
-				head->str);
-			return SC_MSRTK;
-		}
+		if (head->next && is_reserved(head->next))
+			ERR_MSRTK(head->str);
 	}
+	TRACEL("\n");
 	return MT_OK;
 }
 
-#define ERROR(item) \
-	do \
-	{ \
-		sprintf(mt_errstr, "Syntax error near unexpected token '%s'.", \
-			(item)->str); \
-		return SC_MSRTK; \
-	} while(0);
-int check_file_redirector(const st_token_item *head)
+int check_process_redirectors(const st_token *head)
 {
-	int demand_program = 0;
-	st_token_item *hard_delim_it;
+	int demand_program = 0, found_prg;
+	st_token *hard_delim_it;
+	TRACEE("\n");
 	for (; head; head = head->next)
 	{
-		hard_delim_it = st_token_item_find_hard_delim(head);
+		hard_delim_it = find_hard_delim(head);
 		if (!hard_delim_it || (int) hard_delim_it->type != process_redirector)
 		{
-			if (demand_program && !st_token_item_range_contains(
-				(st_token_item *) head, hard_delim_it, program))
-				ERROR(head);
+			found_prg = !!st_token_find_range((st_token *) head,
+				hard_delim_it, st_token_contains, (void *) program);
+			if (demand_program && !found_prg)
+				ERR_MSRTK(head->str);
 			if (hard_delim_it)
 				head = hard_delim_it;
 			demand_program = 0;
@@ -418,53 +434,55 @@ int check_file_redirector(const st_token_item *head)
 		{
 			for (; head != hard_delim_it; head = head->next)
 				if (is_special_character_type((int) head->type))
-					ERROR(head);
+					ERR_MSRTK(head->str);
 			/* may become null and then outer for loop will do
 			   head = head->next and cause a segm fault*/
 			demand_program = 1;
 		}
 	}
 	if (demand_program)
-		ERROR(head ? head : hard_delim_it);
+		ERR_MSRTK(head ? head->str : hard_delim_it->str);
+	TRACEL("\n");
 	return MT_OK;
 }
-#undef ERROR
 
-int check_file_redirectors(const st_token_item *head)
+int check_file_redirectors(const st_token *head)
 {
 	int flags = 0, fd, last_type = -1;
 	st_redirector *redir;
+	TRACEE("\n");
 	for (; head; head = head->next)
 	{
 		if (head->type == file_redirector)
 		{
+			TRACE("Found a file redirector\n");
 			redir = head->redir;
 			if ((unsigned int) redir->fd >= sizeof(int))
-				return SC_USPFD;
+				ERR_USPFD(head->str);
 			fd = 1 << redir->fd;
 			if (flags & fd)
-				return SC_MSRDT;
+				ERR_MSRDT(head->str);
 			flags |= fd;
 		}
 		else if (last_type == file_redirector &&
 			head->type != redirector_path)
 		{
-			return SC_MSREP;
+			ERR_MSREP(head->str);
 		}
-		else if (st_token_item_is_hard_delim(head))
+		else if (is_hard_delim(head))
 		{
+			TRACE("Found a hard delimeter\n");
 			flags = 0;
 		}
 		last_type = head->type;
 	}
+	TRACEL("\n");
 	return MT_OK;
 }
 
-int check_syntax(const st_token_item *head)
+int check_syntax(const st_token *head)
 {
-#ifdef DEBUG
-	fprintf(stderr, "check_syntax() - Enter\n");
-#endif
+	TRACEE("\n");
 	mt_errno = MT_OK;
 
 	if (mt_errno == MT_OK)
@@ -472,65 +490,10 @@ int check_syntax(const st_token_item *head)
 	if (mt_errno == MT_OK)
 		mt_errno = check_reserved_tokens(head);
 	if (mt_errno == MT_OK)
-		mt_errno = check_file_redirector(head);
+		mt_errno = check_process_redirectors(head);
 	if (mt_errno == MT_OK)
 		mt_errno = check_file_redirectors(head);
 
-#ifdef DEBUG
-	fprintf(stderr, "check_syntax() - Leave mt_errno %d\n", mt_errno);
-#endif
+	TRACEL("mt_errno %d\n", mt_errno);
 	return mt_errno == MT_OK ? 0 : -1;
-}
-
-void st_token_item_iterate(const st_token_item **head, size_t times)
-{
-	for (; times != 0ul; times--)
-		*head = (*head)->next;
-}
-
-int st_token_item_contains(const st_token_item *head, int token_type)
-{
-	return !!st_token_item_find_type((st_token_item *) head, token_type);
-}
-
-st_token_item *st_token_item_find_type(st_token_item *head,
-	int token_type)
-{
-	return st_token_item_range_find_type(head, NULL, token_type);
-}
-
-int st_token_item_range_contains(const st_token_item *head,
-	const st_token_item *tail, int token_type)
-{
-	return !!st_token_item_range_find_type((st_token_item *) head,
-		(st_token_item *) tail, token_type);
-}
-
-st_token_item *st_token_item_range_find_type(st_token_item *head,
-	st_token_item *tail, int token_type)
-{
-	int passed_tail = 0;
-	for (; !passed_tail; head = head->next)
-	{
-		if ((int) head->type == token_type)
-			return head;
-		if (head == tail)
-			passed_tail = 1;
-	}
-	return NULL;
-}
-
-int is_token_arg(const st_token_item *item)
-{
-	return item->type == arg || item->type == program;
-}
-
-int is_token_not_arg(const st_token_item *item)
-{
-	return !is_token_arg(item);
-}
-
-int is_token_redirector(const st_token_item *item)
-{
-	return item->type == file_redirector;
 }

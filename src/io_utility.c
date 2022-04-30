@@ -1,5 +1,6 @@
 #include "io_utility.h"
 #include "mt_errno.h"
+#include "log.h"
 
 #include <errno.h>
 #include <stdio.h>
@@ -25,6 +26,7 @@ char *read_string(char *buf, const size_t size)
 		}
 	} while(!res);
 	res[strlen(res) - 1] = '\0';
+	TRACE("read_string() - str [%s]\n", res);
 	return res;
 }
 
@@ -58,4 +60,21 @@ void print_argv(char **argv)
 		if (i > 0)
 			putchar(' ');
 	}
+}
+
+void print_byte(int byte)
+{
+	int i;
+	for (i = 0; i < 8; i++)
+		putchar(!!(byte & (1 << i)) + '0');
+}
+
+void print_flags(void *flags, int bytes)
+{
+	int i;
+	char *arr = (char *) malloc(bytes);
+	memcpy(arr, flags, bytes);
+	for (i = 0; i < bytes; i++)
+		print_byte(arr[i]);
+	free(arr);
 }

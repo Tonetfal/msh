@@ -35,22 +35,23 @@ int stricmp(const char *lhs, const char *rhs)
 	return 0;
 }
 
-size_t get_argv_total_length(int argc, char **argv)
+char *strdup(const char *str)
 {
-	int i = 0;
-	size_t len = 0ul;
-	for (; i < argc; i++)
+	char *cpy = NULL;
+	if (str)
 	{
-		len += strlen(argv[i]);
-#ifdef DEBUG
-		fprintf(stderr, "get_argv_total_length() - argv[%d] [%s] len %lu\n",
-			i, argv[i], len);
-#endif
+		cpy = (char *) malloc(strlen(str) + 1);
+		if (cpy)
+			strcpy(cpy, str);
 	}
-#ifdef DEBUG
-	fprintf(stderr, "get_argv_total_length() - len %lu\n", len);
-#endif
-	return len;
+	return cpy;
+}
+
+size_t argvlen(int argc, char **argv)
+{
+	if (argc == 0)
+		return 0;
+	return argvlen(argc - 1, argv + 1) + strlen(*argv);
 }
 
 void free_if_exists(void *data)

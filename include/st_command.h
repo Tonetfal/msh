@@ -2,9 +2,9 @@
 #define ST_COMMAND_H
 
 #include "eid.h"
-#include "st_redirector.h"
+#include "def.h"
 
-#include <sys/types.h>
+#include <signal.h>
 
 /*
 	Command represents a program call with some behavior modifiers such as
@@ -21,39 +21,48 @@
 	in check_zombies function.
 */
 
-struct st_token_item;
+typedef st_redirector st_file_redirector;
+typedef void *(*callback_t)(st_command *, void *);
 
-typedef struct st_command
+enum
+{
+	CMD_BG          = 1 << 0,
+	CMD_PIPED       = 1 << 1,
+	CMD_BLOCKING    = 1 << 2,
+	CMD_NOT_FG      = CMD_PIPED | CMD_BG,
+};
+
+struct st_command
 {
 	char *cmd_str;
 	int argc;
 	char **argv;
-	int is_bg_process;
-	int is_hidden_bg_process;
+	u_int16_t flags;
 	st_file_redirector **file_redirectors;
 	int pipefd[2];
 
 	pid_t pid;
 	eid_t eid;
-	struct st_command *next, *prev;
-} st_command;
+	st_command *next, *prev;
+};
 
 extern char post_execution_msg[16368];
 
 st_command *st_command_create_empty();
-st_command *st_command_create(const struct st_token_item *head,
-	st_command *prev_cmd);
-st_command **st_commands_create(const struct st_token_item *head);
-void st_command_print(const st_command *cmd);
+st_command *st_command_create(const st_token *head);
+st_command *st_commands_create(const st_token *head);
+void *st_command_traverse(st_command *cmd, callback_t callback,
+	void *userdata);
+void st_command_print(const st_command *cmd, const char *prefix);
 void st_command_delete(st_command *cmd);
-void st_commands_delete(st_command **cmds);
+void st_commands_clear(st_command *head);
 void st_command_push_back(st_command **head, st_command *new_item);
-st_command *st_command_find(st_command *head, pid_t pid);
 int st_command_erase_item(st_command **head, st_command *item);
-pid_t execute_command(st_command *cmd);
-void check_zombies();
+int execute_commands();
+void check_zombie();
 void form_post_execution_msg(const st_command *cmd);
 void clear_post_execution_msg();
 void st_commands_free();
+void st_command_pass_ownership(st_command *cmds);
 
 #endif /* !ST_COMMAND_H */
