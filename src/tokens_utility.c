@@ -11,22 +11,36 @@
 #include <string.h>
 
 #define ERR(code, msg, token) \
-	do \
-	{ \
+	do { \
 		sprintf(mt_errstr, msg, token); \
 		return code; \
 	} while (0)
 
 #define ERR_MSQUO(token) \
-	ERR(SC_MSQUO, "Mismatching quotes near '%s'.", token)
+	do { \
+		TRACEL("Return SC_MSQUO.\n"); \
+		ERR(SC_MSQUO, "Mismatching quotes near '%s'.", token); \
+	} while (0)
 #define ERR_MSRTK(token) \
-	ERR(SC_MSRTK, "Syntax error near unexpected token '%s'.", token)
+	do { \
+		TRACEL("Return SC_MSRTK.\n"); \
+		ERR(SC_MSRTK, "Syntax error near unexpected token '%s'.", token); \
+	} while (0)
 #define ERR_USPFD(token) \
-	ERR(SC_USPFD, "Unsupported file descriptor near '%s'.", token)
+	do { \
+		TRACEL("Return SC_USPFD.\n"); \
+		ERR(SC_USPFD, "Unsupported file descriptor near '%s'.", token); \
+	} while (0)
 #define ERR_MSRDT(token) \
-	ERR(SC_MSRDT, "Mismatching redirector token near '%s'.", token)
+	do { \
+		TRACEL("Return SC_MSRDT.\n"); \
+		ERR(SC_MSRDT, "Mismatching redirector token near '%s'.", token); \
+	} while (0)
 #define ERR_MSREP(token) \
-	ERR(SC_MSREP, "Missing redirector path near '%s'.", token)
+	do { \
+		TRACEL("Return SC_MSREP.\n"); \
+		ERR(SC_MSREP, "Missing redirector path near '%s'.", token); \
+	} while (0)
 
 char is_special_character_ch(char c)
 {
@@ -412,6 +426,41 @@ int check_reserved_tokens(const st_token *head)
 	return MT_OK;
 }
 
+int check_file_redirectors(const st_token *head)
+{
+	int flags = 0, fd, last_type = -1;
+	st_redirector *redir;
+	const st_token *last_token = NULL;
+	TRACEE("\n");
+	for (; head; head = head->next)
+	{
+		if (head->type == file_redirector)
+		{
+			TRACE("Found a file redirector\n");
+			redir = head->redir;
+			if ((unsigned int) redir->fd >= sizeof(int))
+				ERR_USPFD(head->str);
+			fd = 1 << redir->fd;
+			if (flags & fd)
+				ERR_MSRDT(head->str);
+			flags |= fd;
+		}
+		else if (last_type == file_redirector && head->type != redirector_path)
+			ERR_MSREP(head->str);
+		else if (is_hard_delim(head))
+		{
+			TRACE("Found a hard delimeter\n");
+			flags = 0;
+		}
+		last_type = head->type;
+		last_token = head;
+	}
+	if (last_type == file_redirector)
+		ERR_MSREP(last_token->str);
+	TRACEL("\n");
+	return MT_OK;
+}
+
 int check_process_redirectors(const st_token *head)
 {
 	int demand_program = 0, found_prg;
@@ -446,40 +495,6 @@ int check_process_redirectors(const st_token *head)
 	return MT_OK;
 }
 
-int check_file_redirectors(const st_token *head)
-{
-	int flags = 0, fd, last_type = -1;
-	st_redirector *redir;
-	TRACEE("\n");
-	for (; head; head = head->next)
-	{
-		if (head->type == file_redirector)
-		{
-			TRACE("Found a file redirector\n");
-			redir = head->redir;
-			if ((unsigned int) redir->fd >= sizeof(int))
-				ERR_USPFD(head->str);
-			fd = 1 << redir->fd;
-			if (flags & fd)
-				ERR_MSRDT(head->str);
-			flags |= fd;
-		}
-		else if (last_type == file_redirector &&
-			head->type != redirector_path)
-		{
-			ERR_MSREP(head->str);
-		}
-		else if (is_hard_delim(head))
-		{
-			TRACE("Found a hard delimeter\n");
-			flags = 0;
-		}
-		last_type = head->type;
-	}
-	TRACEL("\n");
-	return MT_OK;
-}
-
 int check_syntax(const st_token *head)
 {
 	TRACEE("\n");
@@ -490,9 +505,9 @@ int check_syntax(const st_token *head)
 	if (mt_errno == MT_OK)
 		mt_errno = check_reserved_tokens(head);
 	if (mt_errno == MT_OK)
-		mt_errno = check_process_redirectors(head);
-	if (mt_errno == MT_OK)
 		mt_errno = check_file_redirectors(head);
+	if (mt_errno == MT_OK)
+		mt_errno = check_process_redirectors(head);
 
 	TRACEL("mt_errno %d\n", mt_errno);
 	return mt_errno == MT_OK ? 0 : -1;
