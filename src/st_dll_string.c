@@ -1,5 +1,6 @@
 #include "st_dll_string.h"
 #include "utility.h"
+#include "log.h"
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -20,19 +21,17 @@ st_dll_string *st_dll_string_create(const char *str)
 	if (!str)
 		return head;
 
-	head->str = (char *) malloc(strlen(str) + 1);
-	strcpy(head->str, str);
-
+	head->str = strdup(str);
 	return head;
 }
 
 void st_dll_string_push_back(st_dll_string **head, st_dll_string *new_item)
 {
+	st_dll_string *it = *head;
 	if (!(*head))
 		*head = new_item;
 	else
 	{
-		st_dll_string *it = *head;
 		while (it->next)
 			it = it->next;
 		it->next = new_item;
@@ -42,11 +41,11 @@ void st_dll_string_push_back(st_dll_string **head, st_dll_string *new_item)
 
 void st_dll_string_push_front(st_dll_string **head, st_dll_string *new_item)
 {
+	st_dll_string *it = *head;
 	if (!(*head))
 		*head = new_item;
 	else
 	{
-		st_dll_string *it = *head;
 		while (it->prev)
 			it = it->prev;
 		it->prev = new_item;
@@ -57,12 +56,12 @@ void st_dll_string_push_front(st_dll_string **head, st_dll_string *new_item)
 void st_dll_insert_on_callback(st_dll_string **head, st_dll_string *new_item,
 	st_dll_string *(*callback)(st_dll_string*, st_dll_string*))
 {
+	st_dll_string *found;
 	if (!(*head))
 		*head = new_item;
 	else
 	{
-		st_dll_string *found = (callback)(*head, new_item);
-
+		found = (callback)(*head, new_item);
 		if (found)
 		{
 			if (found->prev)
@@ -87,16 +86,16 @@ void st_dll_string_print(const st_dll_string *head)
 	}
 }
 
-void st_dll_string_clear(st_dll_string *head)
+void st_dll_string_clear(st_dll_string **head)
 {
-	while (head)
+	LOGCFNPP(head);
+	if (*head)
 	{
-		st_dll_string *it = head;
-		head = head->next;
-		if (it->str)
-			free(it->str);
-		free(it);
+		st_dll_string_clear(&(*head)->next);
+		FREE_IFEX(&(*head)->str);
+		FREE(*head);
 	}
+	TRACELC("\n");
 }
 
 void swap(char **lhs, char **rhs)

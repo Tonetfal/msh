@@ -1,4 +1,6 @@
 #include "st_redirector.h"
+#include "utility.h"
+#include "log.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,18 +15,17 @@ st_redirector *st_redirector_create_empty()
 	return item;
 }
 
-void st_redirector_delete(st_redirector *item)
+void st_redirector_delete(st_redirector **item)
 {
-	if (!item)
-		return;
-	if (item->path)
-		free(item->path);
-	free(item);
+	LOGFNPP(item);
+	FREE_IFEX(&(*item)->path);
+	FREE(*item);
+	TRACEL("\n");
 }
 
 void st_redirector_print(st_redirector *item)
 {
-	printf("path [%s] fd [%d] app [%d] dir [%s]", item->path, item->fd,
-		item->app, item->dir == rd_in ? "in" : item->dir == rd_out ? "out" :
-		"unknown");
+	printf("path '%s' - '%p', fd '%d', app '%d', dir '%s'", item->path,
+		(void *) item, item->fd, item->app, item->dir == rd_in ? "in" :
+		item->dir == rd_out ? "out" : "unknown");
 }

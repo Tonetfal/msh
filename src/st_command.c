@@ -20,9 +20,17 @@
 #include <unistd.h>
 
 #define SKIP_TIME_SLICE() usleep(1000)
-#define WAIT_FOR(flag) while (flag) SKIP_TIME_SLICE()
-#define RAISE_ZGUARD() TRACE("\n"); zombie_guard = 1
-#define DROP_ZGUARD() TRACE("\n"); zombie_guard = 0
+#define WAIT_FOR(flag) \
+	do { \
+		if (flag) \
+			PTRACE("Wait for '" #flag "'\n"); \
+		while (flag) \
+			SKIP_TIME_SLICE(); \
+	} while(0)
+#define RAISE_ZGUARD() \
+	do { PTRACE("raise zguard\n"); zombie_guard = 1; } while(0)
+#define DROP_ZGUARD() \
+	do { PTRACE("drop zguard\n"); zombie_guard = 0; } while(0)
 #define CLOSE_FD(fd) \
 	do \
 	{ \
@@ -36,19 +44,38 @@
 			TRACE("Closed fd %d\n", fd); \
 		} \
 	} while(0)
+#define IS_MAIN_BLOCKING_PROGRAM(cmd) \
+	(!(cmd->flags & (CMD_BG | CMD_PIPED)) && cmd->flags | CMD_BLOCKING)
 
-volatile int continue_main_process = 1;
-volatile int zombie_guard = 0;
+volatile sig_atomic_t continue_main_process = 1;
+volatile sig_atomic_t zombie_guard = 0;
+volatile sig_atomic_t child_start = 0;
+volatile sig_atomic_t child_ready = 0;
+volatile sig_atomic_t blocking_processes = 0;
 char post_execution_msg[16368] = {0};
-volatile size_t blocking_processes = 0ul;
+pid_t last_main_process = -2;
 st_command *cmds_head = NULL, *recent_cmds = NULL;
+
+void parent_usr1hdl(int signo)
+{
+	signal(SIGUSR1, &parent_usr1hdl);
+	assert(signo == SIGUSR1);
+	child_ready = 1;
+	TRACE("Got child's signal\n");
+	UNUSED(signo);
+}
+
+void st_command_init()
+{
+	signal(SIGUSR1, &parent_usr1hdl);
+}
 
 size_t count_command_tokens(const st_token *head)
 {
 	size_t i = 0ul;
 	for (; head; head = head->next, i++)
 	{
-		if (is_hard_delim(head))
+		if (is_cmd_delim(head))
 			break;
 	}
 	if (head)
@@ -101,7 +128,7 @@ void app_token_str(char *dest, const st_token *item, const st_token *tail)
 {
 	if (!item)
 		return;
-	if (!is_hard_delim(item) || item->type == bg_process)
+	if (!is_cmd_delim(item) || item->type == bg_process)
 	{
 		if (dest[0] != '\0')
 			strcat(dest, " ");
@@ -362,131 +389,195 @@ st_command *st_commands_create(const st_token *tokens)
 	return head;
 }
 
-void *st_command_traverse(st_command *cmd, callback_t callback, void *userdata)
+void st_command_traverse(st_command *cmd, cmd_vcallback_t callback, void *userdata)
 {
-	void *res;
 	if (!cmd)
-		return NULL;
-	res = callback(cmd, userdata);
-	if (res)
-		return res;
-	return st_command_traverse(cmd->next, callback, userdata);
+		return;
+	callback(cmd, userdata);
+	st_command_traverse(cmd->next, callback, userdata);
 }
 
 #define PREF (prefix ? prefix : "")
+#define PRINT(...) printf(__VA_ARGS__)
+#define PRINT_PREF() PRINT("%s", PREF)
+#define PRINT_DPREF() PRINT("%s%s", PREF, PREF)
 
 /* Single prefix print */
 #define P_PRINT(...) \
 	do { \
-		printf("%s", PREF); \
-		printf(__VA_ARGS__); \
-	} while (0);
+		PRINT_PREF(); \
+		PRINT(__VA_ARGS__); \
+	} while (0)
 
 /* Double prefix print */
 #define PP_PRINT(...) \
 	do { \
-		printf("%s%s", PREF, PREF); \
-		printf(__VA_ARGS__); \
+		PRINT_DPREF(); \
+		PRINT(__VA_ARGS__); \
 	} while (0);
 
-void print_literal_flags(const st_command *cmd, const char *prefix)
+void print_literal_flags(const st_command *cmd)
 {
 #define CONTAINS(var) \
 	if (cmd->flags & (var)) \
-		P_PRINT("%s", #var)
+		PRINT("%s ", #var)
 
 	CONTAINS(CMD_BG);
 	CONTAINS(CMD_PIPED);
 	CONTAINS(CMD_BLOCKING);
+	CONTAINS(CMD_FORKED);
+	CONTAINS(CMD_STARTED);
 
 #undef CONTAINS
 }
 
+/* Left/Right enclosure */
+#define LENC "'"
+#define RENC "'"
+#define STR  LENC "%s" RENC
+#define DEC  LENC "%d" RENC
+#define ADDR LENC "%p" RENC
 void st_command_print(const st_command *cmd, const char *prefix)
 {
 	size_t i;
 	st_file_redirector **redir = cmd->file_redirectors;
-	P_PRINT("cmd addr %p\n", (void *) cmd);
-	P_PRINT("cmd_str: [%s]\n", cmd->cmd_str);
+	P_PRINT("cmd addr - "ADDR"\n", (void *) cmd);
+	P_PRINT("cmd_str: "STR" - "ADDR"\n", cmd->cmd_str,
+		(void *) cmd->cmd_str);
 	P_PRINT("argc: %d\n", cmd->argc);
 
 	P_PRINT("argv: [ \n");
 	for (i = 0ul; cmd->argv[i]; i++)
-		PP_PRINT("[%s], \n", cmd->argv[i]);
-	PP_PRINT("[%s]\n", cmd->argv[i]);
+		PP_PRINT(STR" - "ADDR",\n", cmd->argv[i], (void *)cmd->argv[i]);
+	PP_PRINT(STR"\n", cmd->argv[i]);
 	P_PRINT("]\n");
 
 	P_PRINT("flags: ");
 	print_flags((void *) &cmd->flags, sizeof(cmd->flags));
-	P_PRINT("\n");
-	print_literal_flags(cmd, prefix);
-	P_PRINT("\n");
+	PRINT("\n");
+	PRINT_DPREF();
+	print_literal_flags(cmd);
+	PRINT("\n");
 
-	P_PRINT("pid: [%d]\n", cmd->pid);
-	P_PRINT("eid: [%d]\n", cmd->eid);
+	P_PRINT("pid: "DEC"\n", cmd->pid);
+	P_PRINT("eid: "DEC"\n", cmd->eid);
 
-	P_PRINT("file_redirectors: [ \n");
+	P_PRINT("file_redirectors - "ADDR": [ \n", (void *) cmd->file_redirectors);
 	for (i = 0ul; redir[i]; i++)
 	{
 		PP_PRINT("[");
 		st_redirector_print(redir[i]);
-		PP_PRINT("],\n");
+		PRINT("],\n");
 	}
 	PP_PRINT("%p\n", (void *) redir[i]);
 	P_PRINT("]\n");
-	P_PRINT("pipefd: %d %d\n", cmd->pipefd[0], cmd->pipefd[1]);
-	P_PRINT("Next: %p Prev: %p\n", (void *) cmd->next, (void *) cmd->prev);
+	P_PRINT("pipefd: IN "DEC" | OUT "DEC"\n", cmd->pipefd[0], cmd->pipefd[1]);
+	P_PRINT("Next: "ADDR" Prev: "ADDR"\n", (void *) cmd->next,
+		(void *) cmd->prev);
 }
+#undef ADDR
+#undef DEC
+#undef STR
+#undef RENC
+#undef LENC
 #undef PP_PRINT
-#undef PP_PRINT
+#undef P_PRINT
+#undef PRINT
 #undef PREF
 
-void argv_delete(char **argv)
+void argv_delete(char ***argv)
 {
 	int i = 0;
-	TRACEE("\n");
-	if (!argv)
-		return;
-	for (; argv[i]; i++)
-		free(argv[i]);
+	LOGFNPP(argv);
+	for (; (*argv)[i]; i++)
+		FREE((*argv)[i]);
+	FREE(*argv);
+	*argv = NULL;
 	TRACEL("\n");
 }
 
-void st_redirectors_delete(st_redirector **redirectors)
+void st_redirectors_delete(st_redirector ***redirectors)
 {
 	size_t i = 0ul;
-	TRACEE("\n");
-	if (!redirectors)
-		return;
-	for (; redirectors[i]; i++)
+	LOGFNPP(redirectors);
+	for (; (*redirectors)[i]; i++)
 		st_redirector_delete(redirectors[i]);
-	free(redirectors);
+	FREE(*redirectors);
 	TRACEL("\n");
 }
 
-void st_command_delete(st_command *cmd)
+void st_command_delete(st_command **cmd)
 {
-	TRACEE("cmd addr %p\n", (void *) cmd);
-	if (!cmd)
-	{
-		TRACEL("cmd is null \n");
-		return;
-	}
-	free_if_exists(cmd->cmd_str);
-	argv_delete(cmd->argv);
-	st_redirectors_delete(cmd->file_redirectors);
+	LOGFNPP(cmd);
+	FREE_IFEX(&(*cmd)->cmd_str);
+	argv_delete(&(*cmd)->argv);
+	st_redirectors_delete(&(*cmd)->file_redirectors);
 	/* fds are closed in execute_commands */
-	release_eid(cmd->eid);
-	free(cmd);
+	release_eid((*cmd)->eid);
+	FREE(*cmd);
 	TRACEL("\n");
 }
 
-void st_commands_clear(st_command *head)
+void st_commands_clear(st_command **head)
 {
+	LOGCFNPP(head);
+	if (*head)
+	{
+		st_commands_clear(&(*head)->next);
+		st_command_delete(head);
+	}
+	TRACELC("\n");
+}
+
+void st_command_push_back(st_command **head, st_command *new_item)
+{
+	st_command *it = *head;
+	TRACEE("New item %p\n", (void *) new_item);
+	if (!(*head))
+		*head = new_item;
+	else
+	{
+		while (it->next)
+			it = it->next;
+		it->next = new_item;
+		new_item->prev = it;
+		TRACE("it->next = %p new_item->prev = %p\n", (void *) new_item,
+			(void *) it);
+	}
+	TRACEL("\n");
+}
+
+st_command *st_command_find(st_command *head, cmd_scallback_t callback,
+	void *userdata)
+{
+	st_command *res;
 	if (!head)
-		return;
-	st_commands_clear(head->next);
-	st_command_delete(head);
+		return NULL;
+	res = callback(head, userdata);
+	if (res)
+		return res;
+	return st_command_find(head->next, callback, userdata);
+}
+
+int st_command_erase_item(st_command **head, st_command *item)
+{
+	LOGFNE(head, item);
+	if (*head == item)
+	{
+		*head = (*head)->next;
+		if (*head)
+			(*head)->prev = item->prev;
+	}
+	else
+	{
+		if (item->prev)
+			item->prev->next = item->next;
+		if (item->next)
+			item->next->prev = item->prev;
+	}
+	st_command_delete(&item);
+	TRACEL("\n");
+	return 1;
 }
 
 int output_exec_result(int status)
@@ -511,14 +602,14 @@ st_dll_string *find_higher(st_dll_string *to_iterate, st_dll_string *to_insert)
 void print_sorted_environ()
 {
 	st_dll_string *node, *head = NULL;
-	size_t i;
-	for (i = 0ul; __environ[i]; i++)
+	size_t i = 0ul;
+	for (; __environ[i]; i++)
 	{
 		node = st_dll_string_create(__environ[i]);
 		st_dll_insert_on_callback(&head, node, &find_higher);
 	}
 	st_dll_string_print(head);
-	st_dll_string_clear(head);
+	st_dll_string_clear(&head);
 }
 
 void handle_export(const st_command *cmd)
@@ -552,7 +643,7 @@ void handle_cd(const st_command *cmd)
 #define REDIRECT(from, to) \
 	if (dup2(from, to) == -1) \
 	{ \
-		TRACE("dup2(%d, %d): ", from, to); \
+		PTRACE("dup2(%d, %d): ", from, to); \
 		perror(""); \
 		return 1; \
 	}
@@ -562,11 +653,11 @@ int redirect_file_stream(st_command *cmd)
 	int fd;
 	size_t i;
 	st_redirector **redic = cmd->file_redirectors;
-	TRACEE("\n");
+	PTRACEE("\n");
 	for (i = 0ul; redic[i]; i++)
 	{
 #ifdef _TRACE
-		TRACE("New iteration. redirector: ");
+		PTRACE("New iteration. redirector: ");
 		st_redirector_print(redic[i]);
 		putchar(10);
 #endif
@@ -577,22 +668,22 @@ int redirect_file_stream(st_command *cmd)
 			0666);
 		if (fd == -1)
 		{
-			TRACE("Failed to open '%s': ", redic[i]->path);
+			PTRACE("Failed to open '%s': ", redic[i]->path);
 			perror("");
 			return 1;
 		}
 		/* redirect a stream */
 		REDIRECT(fd, redic[i]->fd);
-		TRACE("Redirected a file stream (%d) to %d\n", fd, redic[i]->fd);
+		PTRACE("Redirected a file stream (%d) to %d\n", fd, redic[i]->fd);
 	}
-	TRACEL("\n");
+	PTRACEL("\n");
 	return 0;
 }
 
 int redirect_process_stream(st_command *cmd)
 {
 	int i, fd;
-	TRACEE("\n");
+	PTRACEE("\n");
 	for (i = 0; i < 2; i++)
 	{
 		fd = cmd->pipefd[i];
@@ -600,14 +691,14 @@ int redirect_process_stream(st_command *cmd)
 		{
 			REDIRECT(fd, i);
 			assert(!i ? cmd->prev : cmd->next);
-			TRACE("Substitute %s's fd with %d, %s of '%s'\n",
+			PTRACE("Substitute %s's fd with %d, %s of '%s'\n",
 				!i ? "stdin" : "stdout",
 				cmd->pipefd[i],
 				!i ? "stdout" : "stdin",
 				!i ? cmd->prev->cmd_str : cmd->next->cmd_str);
 		}
 	}
-	TRACEL("\n");
+	PTRACEL("\n");
 	return 0;
 }
 
@@ -664,13 +755,48 @@ void close_pipe_cmd(st_command *cmd)
 void close_opp_pipe_side(const st_command *cmd)
 {
 	const int *fds = cmd->pipefd;
-	TRACEE("cmd '%s' pipefd[0] %d pipefd[1] %d\n", cmd->cmd_str,
-		fds[0], fds[1]);
+	PTRACEE("cmd - '%s' pipefds '%d' | '%d'\n", cmd->cmd_str, fds[0], fds[1]);
 	if (fds[0] != -1)
 		CLOSE_FD(fds[0] + 1);
 	if (fds[1] != -1)
 		CLOSE_FD(fds[1] - 1);
 	TRACEL("\n");
+}
+
+void child_usr1hdl(int signo)
+{
+	child_start = 1;
+	UNUSED(signo);
+}
+
+void wait_parent()
+{
+	sigset_t mask_usr1, mask_empty;
+	PTRACEE("\n");
+	sigemptyset(&mask_usr1);
+	sigemptyset(&mask_empty);
+	sigaddset(&mask_usr1, SIGUSR1);
+	sigprocmask(SIG_SETMASK, &mask_usr1, NULL);
+	signal(SIGUSR1, &child_usr1hdl);
+	kill(getppid(), SIGUSR1);
+	PTRACE("Signaled parent about readiness");
+	while (!child_start)
+		sigsuspend(&mask_empty);
+	PTRACE("Got parent's signal\n");
+	PTRACEL("\n");
+}
+
+void wait_child_readiness()
+{
+	sigset_t mask_usr1, mask_empty;
+	TRACEE("\n");
+	sigemptyset(&mask_usr1);
+	sigemptyset(&mask_empty);
+	sigaddset(&mask_usr1, SIGUSR1);
+	sigprocmask(SIG_SETMASK, &mask_usr1, NULL);
+	while (!child_ready)
+		sigsuspend(&mask_empty);
+	TRACEL("Child is ready\n");
 }
 
 pid_t cmd_fork(st_command *cmd)
@@ -685,137 +811,108 @@ pid_t cmd_fork(st_command *cmd)
 	}
 	else if (pid == 0)
 	{
+		wait_parent();
+		if (errno == SIGINT)
+			exit(1);
 		close_opp_pipe_side(cmd);
 		if (redirect_streams(cmd) == -1)
 		{
-			TRACE("'%s' exit\n", cmd->cmd_str);
+			PTRACE("'%s' exit\n", cmd->cmd_str);
 			exit(1);
 		}
-		TRACE("execvp '%s'\n", cmd->cmd_str);
+		PTRACE("Executing '%s'...\n", cmd->cmd_str);
 		execvp(cmd->argv[0], cmd->argv);
 		perror(cmd->cmd_str);
 		exit(1);
 	}
+
+	assert(!(cmd->flags & CMD_FORKED));
+	cmd->flags |= CMD_FORKED;
+	wait_child_readiness();
+
 	TRACEL("\n");
 	return pid;
 }
 
-pid_t call_command(st_command *cmd)
+pid_t call_function(st_command *cmd)
 {
 	TRACEE("\n");
 
 	open_pipe(cmd);
 	cmd->pid = cmd_fork(cmd);
 
-	TRACEL("pid %d\n", cmd->pid);
+	PTRACEL("Fork PID: %d\n", cmd->pid);
 	return cmd->pid;
+}
+
+void unpause_child(st_command *cmd, void *data)
+{
+	UNUSED(data);
+	if (!(cmd->flags & CMD_STARTED) && cmd->flags & CMD_FORKED)
+	{
+		assert(cmd->pid > 0);
+		PTRACE("PID %d woke up\n", cmd->pid);
+		kill(cmd->pid, SIGUSR1);
+		cmd->flags |= CMD_STARTED;
+	}
+}
+
+void unpause_children()
+{
+	TRACEE("\n");
+	TRACE("Unpause children\n");
+	st_command_traverse(cmds_head, &unpause_child, NULL);
+	TRACEL("\n");
 }
 
 pid_t handle_process(st_command *cmd)
 {
+	pid_t pid;
 	TRACEE("cmd [%s] addr %p\n", cmd->cmd_str, (void *) cmd);
 
 	if (cmd->flags & CMD_BG)
 		cmd->eid = acquire_eid();
-	cmd->pid = call_command(cmd);
+	pid = call_function(cmd);
+	cmd->pid = pid;
 	if (cmd->pid == -1)
 	{
 		TRACEL("if pid == -1\n");
-		st_command_delete(cmd);
+		st_command_delete(&cmd);
 		return 0;
 	}
 	if (cmd->flags & CMD_BLOCKING)
 	{
 		blocking_processes++;
-		TRACE("blocking_processes++ %lu\n", blocking_processes);
+		TRACE("blocking_processes++ %d\n", blocking_processes);
 	}
-	if (cmd->flags == CMD_BLOCKING)
+	if (IS_MAIN_BLOCKING_PROGRAM(cmd))
 	{
-		/* as soon as possible (after launching a piped process) disallow
-		   main process to work while pipe's work isn't terminated */
 		TRACE("continue_main_process = 0\n");
+		last_main_process = pid;
 		continue_main_process = 0;
 
-		if (zombie_guard)
-			TRACE("Wait for zombie guard\n");
-		WAIT_FOR(zombie_guard);
-		RAISE_ZGUARD();
 		if (cmd->pipefd[0] != -1)
 			close_pipe_cmd(cmd);
-		DROP_ZGUARD();
-
+		unpause_children();
 		WAIT_FOR(!continue_main_process);
 	}
 	TRACEL("\n");
-	return cmd->pid;
-}
-
-void st_command_push_back(st_command **head, st_command *new_item)
-{
-	st_command *it;
-	TRACEE("new item %p\n", (void *) new_item);
-	if (!(*head))
-		*head = new_item;
-	else
-	{
-		it = *head;
-		while (it->next)
-			it = it->next;
-		it->next = new_item;
-		new_item->prev = it;
-		TRACE("it->next = %p new_item->prev = %p\n", (void *) new_item,
-			(void *) it);
-	}
-	TRACEL("\n");
-}
-
-st_command *st_command_find(st_command *head, callback_t callback,
-	void *userdata)
-{
-	if (!head)
-		return NULL;
-	if (*(int *) callback(head, userdata))
-		return head;
-	return st_command_find(head->next, callback, userdata);
-}
-
-int st_command_erase_item(st_command **head, st_command *item)
-{
-	TRACEE("head %p *head %p item %p \n",
-		(void *) head, (void *) *head, (void *) item);
-	if (!(*head) || !item)
-	{
-		TRACEL("some ptr is null\n");
-		return 0;
-	}
-	if (*head == item)
-	{
-		TRACE("Move head\n");
-		*head = (*head)->next;
-		if (*head)
-			(*head)->prev = item->prev;
-	}
-	else
-	{
-		TRACE("Edit item's prev and next ptrs\n");
-		if (item->prev)
-			item->prev->next = item->next;
-		if (item->next)
-			item->next->prev = item->prev;
-	}
-	st_command_delete(item);
-	TRACEL("\n");
-	return 1;
+	return pid;
 }
 
 int execute_commands()
 {
-	int res;
-	st_command *cmd;
+	int res, main_blocking_launched = 0;
+	st_command *cmd, *next;
 	TRACEE("\n");
-	for (; recent_cmds; recent_cmds = recent_cmds->next)
+	for (; recent_cmds; recent_cmds = next)
 	{
+		/*
+			TODO Make commands run until a delim such as ;, && or ||, instead
+			of running them all simultaneously
+		*/
 		cmd = recent_cmds;
+		next = cmd->next; /* take it before cmd gets deleted */
 		if (!strcmp(cmd->argv[0], "cd"))
 			handle_cd(cmd);
 		else if (!strcmp(cmd->argv[0], "export"))
@@ -825,8 +922,10 @@ int execute_commands()
 		else
 			res = handle_process(cmd);
 
+		if (last_main_process == res)
+			main_blocking_launched = 1;
 		/* close a pipe as soon as its second process starts */
-		if (cmd->pipefd[0] != -1)
+		if (last_main_process != res && cmd->pipefd[0] != -1)
 			close_pipe_cmd(cmd);
 
 		if (res == -1)
@@ -835,20 +934,13 @@ int execute_commands()
 			return -1;
 		}
 	}
+	if (!main_blocking_launched)
+	{ /* unpause all children */ }
 	TRACEL("\n");
 	return 0;
 }
 
-void clean_zombie_data(st_command *cmd)
-{
-	TRACEE("About to clean up '%s'\n", cmd->cmd_str);
-	if (cmd->flags & CMD_BG)
-		form_post_execution_msg(cmd);
-	st_command_erase_item(&cmds_head, cmd);
-	TRACEL("A command has been erased from the list.\n");
-}
-
-void *compare_pid(st_command *cmd, void *pid)
+st_command *compare_pid(st_command *cmd, void *pid)
 {
 	int res = cmd->pid == *(pid_t *) pid;
 	return res ? cmd : NULL;
@@ -863,11 +955,23 @@ void print_term_msg_sig(const st_command *cmd, int no)
 		cmd->eid, cmd->cmd_str, no);
 }
 
+void handle_res_output(st_command *cmd, int status)
+{
+	/* TODO use some struct to keep info about res codes such as if a process
+		was signaled or exited, the actual exit code str etc */
+	int code = output_exec_result(status);
+	if (cmd->flags & CMD_BG)
+	{
+		print_term_msg_sig(cmd, code);
+		form_post_execution_msg(cmd);
+	}
+}
+
 void decrease_blocking_processes()
 {
-	assert(blocking_processes > 0ul);
+	assert(blocking_processes > 0);
 	blocking_processes--;
-	TRACE("blocking processes-- %lu\n", blocking_processes);
+	PTRACE("blocking processes-- %d\n", blocking_processes);
 }
 
 void handle_blocking(st_command *cmd)
@@ -875,43 +979,35 @@ void handle_blocking(st_command *cmd)
 	if (!(cmd->flags & CMD_BLOCKING))
 		return;
 	decrease_blocking_processes();
-	TRACE("pid %d cmd '%s' Wait bprcs (%lu) cont mprcs (%d) zguard (%d)\n",
-		cmd->pid, cmd->cmd_str, blocking_processes,
-		continue_main_process, zombie_guard);
+	PTRACE("cmd '%s' Wait cont mprcs (%d) bprcs (%d) zguard (%d)\n",
+		cmd->cmd_str, continue_main_process, blocking_processes, zombie_guard);
 	WAIT_FOR((!continue_main_process && blocking_processes) || zombie_guard);
 	continue_main_process = 1;
 }
 
 void handle_exec_res(st_command *cmd, int status)
 {
-	int code;
-	TRACEE("pid %d cmd '%s'\n", cmd->pid, cmd->cmd_str);
-	code = output_exec_result(status);
-	if (cmd->flags & CMD_BG)
-		print_term_msg_sig(cmd, code);
+	PTRACEE("cmd '%s'\n", cmd->cmd_str);
+	handle_res_output(cmd, status);
 	handle_blocking(cmd);
+	WAIT_FOR(zombie_guard);
 	RAISE_ZGUARD();
-	TRACE("Child process clean up\n");
-	clean_zombie_data(cmd);
+	st_command_erase_item(&cmds_head, cmd);
 	DROP_ZGUARD();
-	TRACEL("\n");
+	PTRACEL("\n");
 }
 
 void check_zombie()
 {
 	int status;
 	pid_t pid = wait4(-1, &status, WNOHANG, NULL);
-	st_command *cmd = (st_command *) st_command_traverse(cmds_head,
-		compare_pid, (void *) &pid);
-	assert(pid != -1 && cmd);
-	TRACEE("pid %d cmd '%s'\n", pid, cmd->cmd_str);
-
-	if (zombie_guard)
-		TRACE("pid %d waiting for guard %d\n", pid, zombie_guard);
-	WAIT_FOR(zombie_guard);
+	st_command *cmd = (st_command *) st_command_find(cmds_head, compare_pid,
+		(void *) &pid);
+	assert(pid != -1);
+	assert(cmd);
+	PTRACEE("cmd '%s'\n", cmd->cmd_str);
 	handle_exec_res(cmd, status);
-
-	TRACEL("\n");
+	PTRACEL("\n");
 }
 
 void form_post_execution_msg(const st_command *cmd)
@@ -938,7 +1034,7 @@ void clear_post_execution_msg()
 
 void st_commands_free()
 {
-	st_commands_clear(cmds_head);
+	st_commands_clear(&cmds_head);
 }
 
 void print_cmds_head()

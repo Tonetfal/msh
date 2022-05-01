@@ -1,4 +1,5 @@
 #include "utility.h"
+#include "log.h"
 
 #include <ctype.h>
 #include <stdio.h>
@@ -38,12 +39,18 @@ int stricmp(const char *lhs, const char *rhs)
 char *strdup(const char *str)
 {
 	char *cpy = NULL;
+	size_t len;
+	TRACEE("String '%s' - '%p'\n", str, (void *) str);
 	if (str)
 	{
-		cpy = (char *) malloc(strlen(str) + 1);
+		len = strlen(str) + 1;
+		cpy = (char *) malloc(len);
+		TRACE("%zu bytes were allocated at '%p'\n", len, (void *) cpy);
 		if (cpy)
 			strcpy(cpy, str);
+		TRACE("New string '%s' - '%p'\n", cpy, (void *) cpy);
 	}
+	TRACEL("\n");
 	return cpy;
 }
 
@@ -54,8 +61,9 @@ size_t argvlen(int argc, char **argv)
 	return argvlen(argc - 1, argv + 1) + strlen(*argv);
 }
 
-void free_if_exists(void *data)
+void free_if_exists(void **data)
 {
-	if (data)
-		free(data);
+	LOGFNPP(data);
+	FREE(*data);
+	TRACEL("\n");
 }

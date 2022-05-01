@@ -119,13 +119,14 @@ void st_invite_msg_print(const st_invite_msg *msg)
 		msg->post_path_text);
 }
 
-void st_invite_msg_delete(st_invite_msg *item)
+void st_invite_msg_delete(st_invite_msg **item)
 {
 	if (!item)
 		return;
-	free_if_exists(item->user);
-	free_if_exists(item->post_user_text);
-	free_if_exists(item->abs_path);
-	free_if_exists(item->post_path_text);
-	free(item);
+	free_if_exists((void *) &(*item)->user);
+	free_if_exists((void *) &(*item)->post_user_text);
+	free_if_exists((void *) &(*item)->abs_path);
+	free_if_exists((void *) &(*item)->post_path_text);
+	free(*item);
+	*item = NULL;
 }

@@ -22,14 +22,16 @@
 */
 
 typedef st_redirector st_file_redirector;
-typedef void *(*callback_t)(st_command *, void *);
+typedef void (*cmd_vcallback_t)(st_command *, void *);
+typedef st_command *(*cmd_scallback_t)(st_command *, void *);
 
 enum
 {
-	CMD_BG          = 1 << 0,
-	CMD_PIPED       = 1 << 1,
-	CMD_BLOCKING    = 1 << 2,
-	CMD_NOT_FG      = CMD_PIPED | CMD_BG,
+	CMD_BG          = 1 << 0,		/* Background process */
+	CMD_PIPED       = 1 << 1,		/* Redirected I/O with some process */
+	CMD_BLOCKING    = 1 << 2,		/* No prompt while it's running */
+	CMD_FORKED      = 1 << 3,		/* Cmd was used to fork */
+	CMD_STARTED     = 1 << 4,		/* Process has started */
 };
 
 struct st_command
@@ -48,14 +50,18 @@ struct st_command
 
 extern char post_execution_msg[16368];
 
+void st_command_init();
 st_command *st_command_create_empty();
 st_command *st_command_create(const st_token *head);
 st_command *st_commands_create(const st_token *head);
-void *st_command_traverse(st_command *cmd, callback_t callback,
+
+void st_command_traverse(st_command *cmd, cmd_vcallback_t callback, void *userdata);
+st_command *st_command_find(st_command *head, cmd_scallback_t callback,
 	void *userdata);
+
 void st_command_print(const st_command *cmd, const char *prefix);
-void st_command_delete(st_command *cmd);
-void st_commands_clear(st_command *head);
+void st_command_delete(st_command **cmd);
+void st_commands_clear(st_command **head);
 void st_command_push_back(st_command **head, st_command *new_item);
 int st_command_erase_item(st_command **head, st_command *item);
 int execute_commands();

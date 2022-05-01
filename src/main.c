@@ -10,6 +10,13 @@
 #include <stdio.h>
 #include <unistd.h>
 
+/*
+	TOIMPLEMENT
+	Left/Right key arrows to modify the written command in any position.
+	Top/Down key arrows to leaf through command history.
+	Tab to get suggestions.
+*/
+
 #define HANDLE_ERROR(code, str, head) \
 	if (code == MT_ERR) \
 	{ \
@@ -18,13 +25,13 @@
 		continue; \
 	}
 
-void sigchld_handler(int s)
+void chld_hdl(int s)
 {
-	UNUSED(s);
-	signal(SIGCHLD, &sigchld_handler);
+	signal(SIGCHLD, &chld_hdl);
 	TRACEE("Signal %d has arrived\n", s);
 	check_zombie();
 	TRACEL("\n");
+	UNUSED(s);
 }
 
 int main()
@@ -36,7 +43,8 @@ int main()
 	st_token *tokens = NULL;
 	st_command *cmds, *cmd;
 
-	signal(SIGCHLD, &sigchld_handler);
+	signal(SIGCHLD, &chld_hdl);
+	st_command_init();
 	clear_post_execution_msg();
 	while (cont)
 	{
@@ -55,7 +63,7 @@ int main()
 #endif
 			analyze_token_types(tokens);
 			res = check_syntax(tokens);
-			HANDLE_ERROR(res, NULL, tokens);
+			HANDLE_ERROR(res, NULL, &tokens);
 
 			cmds = st_commands_create(tokens);
 #ifdef _TRACE
@@ -74,7 +82,7 @@ int main()
 				break;
 			}
 
-			st_token_clear(tokens);
+			st_token_clear(&tokens);
 		}
 
 		res = printf("%s", post_execution_msg);
@@ -83,7 +91,7 @@ int main()
 			putchar(10);
 	}
 	printf("exit\n");
-	st_invite_msg_delete(invite_msg);
+	st_invite_msg_delete(&invite_msg);
 	st_commands_free();
 
 	/* avoid warning on release build */

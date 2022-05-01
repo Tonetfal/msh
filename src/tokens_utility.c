@@ -10,37 +10,28 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define ERR(code, msg, token) \
+#define HDL_ERR(err, fmt, args) \
 	do { \
-		sprintf(mt_errstr, msg, token); \
-		return code; \
+		sprintf(mt_errstr, fmt, args); \
+		return err; \
 	} while (0)
 
-#define ERR_MSQUO(token) \
+#define TRACE_ERR(err, fmt, args) \
 	do { \
-		TRACEL("Return SC_MSQUO.\n"); \
-		ERR(SC_MSQUO, "Mismatching quotes near '%s'.", token); \
+		TRACEL("Return " #err "\n"); \
+		HDL_ERR(err, fmt, args); \
 	} while (0)
-#define ERR_MSRTK(token) \
-	do { \
-		TRACEL("Return SC_MSRTK.\n"); \
-		ERR(SC_MSRTK, "Syntax error near unexpected token '%s'.", token); \
-	} while (0)
-#define ERR_USPFD(token) \
-	do { \
-		TRACEL("Return SC_USPFD.\n"); \
-		ERR(SC_USPFD, "Unsupported file descriptor near '%s'.", token); \
-	} while (0)
-#define ERR_MSRDT(token) \
-	do { \
-		TRACEL("Return SC_MSRDT.\n"); \
-		ERR(SC_MSRDT, "Mismatching redirector token near '%s'.", token); \
-	} while (0)
-#define ERR_MSREP(token) \
-	do { \
-		TRACEL("Return SC_MSREP.\n"); \
-		ERR(SC_MSREP, "Missing redirector path near '%s'.", token); \
-	} while (0)
+
+#define ERR_MSQUO(args) \
+	TRACE_ERR(SC_MSQUO, "Mismatching quotes near '%s'.", args)
+#define ERR_MSRTK(args) \
+	TRACE_ERR(SC_MSRTK, "Syntax error near unexpected token '%s'.", args)
+#define ERR_USPFD(args) \
+	TRACE_ERR(SC_USPFD, "Unsupported file descriptor near '%s'.", args)
+#define ERR_MSRDT(args) \
+	TRACE_ERR(SC_MSRDT, "Mismatching redirector token near '%s'.", args)
+#define ERR_MSREP(args) \
+	TRACE_ERR(SC_MSREP, "Missing redirector path near '%s'.", args)
 
 char is_special_character_ch(char c)
 {
@@ -77,12 +68,12 @@ char is_special_character_type(int type)
 	return 0;
 }
 
-int is_hard_delim_str(const char *str)
+int is_cmd_delim_str(const char *str)
 {
 	/* modify the row's length in case of adding a longer string
 	   (don't forget about the terminating zero) */
 #define LEN 3
-	char hard_delims[][LEN] = {
+	char cmd_delims[][LEN] = {
 		"|",
 		";",
 		"&",
@@ -91,15 +82,15 @@ int is_hard_delim_str(const char *str)
 	};
 	size_t i = 0ul;
 
-	for (; i < sizeof(hard_delims) / LEN; i++)
-		if (!strcmp(str, hard_delims[i]))
+	for (; i < sizeof(cmd_delims) / LEN; i++)
+		if (!strcmp(str, cmd_delims[i]))
 			return 1;
 	return 0;
 }
 
-int is_hard_delim(const st_token *item)
+int is_cmd_delim(const st_token *item)
 {
-	const int hard_delims[] = {
+	const int cmd_delims[] = {
 		process_redirector,
 		separator,
 		bg_process,
@@ -110,21 +101,21 @@ int is_hard_delim(const st_token *item)
 	};
 	size_t i = 0ul;
 
-	for (; i < sizeof(hard_delims) / sizeof(int); i++)
+	for (; i < sizeof(cmd_delims) / sizeof(int); i++)
 	{
-		if ((char) item->type == hard_delims[i])
+		if ((char) item->type == cmd_delims[i])
 			return 1;
 	}
 	return 0;
 }
 
-st_token *find_hard_delim(const st_token *item)
+st_token *find_cmd_delim(const st_token *item)
 {
 	if (!item)
 		return NULL;
-	if (is_hard_delim(item))
+	if (is_cmd_delim(item))
 		return (st_token *) item;
-	return find_hard_delim(item->next);
+	return find_cmd_delim(item->next);
 }
 
 char *read_token(const char *str, char *last_ch, size_t *read_bytes,
@@ -345,7 +336,7 @@ void analyze_token_types(st_token *head)
 		}
 		else if (type == file_redirector)
 			setup_redirector(head);
-		else if (is_hard_delim_str(head->str))
+		else if (is_cmd_delim_str(head->str))
 		{
 			TRACE("Last expression is formed up from %d tokens\n",
 				expr_tokens);
@@ -369,12 +360,17 @@ int is_quote(st_token *item, void *data)
 
 int check_quotes(const st_token *head)
 {
+	int res;
 	size_t c;
 	TRACEE("\n");
 	c = st_token_count((st_token *) head, &is_quote, NULL);
-	TRACEL("Count %lu\n", c);
-	if (c % 2ul == 1ul)
+	res = c % 2ul == 1ul;
+	if (res)
+	{
+		TRACE("Quotes counter: %lu\n", c);
 		ERR_MSQUO(head->str);
+	}
+	TRACEL("Quotes counter: %lu. Test was passed\n", c);
 	return MT_OK;
 }
 
@@ -422,7 +418,7 @@ int check_reserved_tokens(const st_token *head)
 		if (head->next && is_reserved(head->next))
 			ERR_MSRTK(head->str);
 	}
-	TRACEL("\n");
+	TRACEL("Test was passed\n");
 	return MT_OK;
 }
 
@@ -447,9 +443,9 @@ int check_file_redirectors(const st_token *head)
 		}
 		else if (last_type == file_redirector && head->type != redirector_path)
 			ERR_MSREP(head->str);
-		else if (is_hard_delim(head))
+		else if (is_cmd_delim(head))
 		{
-			TRACE("Found a hard delimeter\n");
+			TRACE("Found a cmd delimeter\n");
 			flags = 0;
 		}
 		last_type = head->type;
@@ -457,31 +453,31 @@ int check_file_redirectors(const st_token *head)
 	}
 	if (last_type == file_redirector)
 		ERR_MSREP(last_token->str);
-	TRACEL("\n");
+	TRACEL("Test was passed\n");
 	return MT_OK;
 }
 
 int check_process_redirectors(const st_token *head)
 {
 	int demand_program = 0, found_prg;
-	st_token *hard_delim_it;
+	st_token *cmd_delim_it;
 	TRACEE("\n");
 	for (; head; head = head->next)
 	{
-		hard_delim_it = find_hard_delim(head);
-		if (!hard_delim_it || (int) hard_delim_it->type != process_redirector)
+		cmd_delim_it = find_cmd_delim(head);
+		if (!cmd_delim_it || (int) cmd_delim_it->type != process_redirector)
 		{
 			found_prg = !!st_token_find_range((st_token *) head,
-				hard_delim_it, st_token_contains, (void *) program);
+				cmd_delim_it, st_token_contains, (void *) program);
 			if (demand_program && !found_prg)
 				ERR_MSRTK(head->str);
-			if (hard_delim_it)
-				head = hard_delim_it;
+			if (cmd_delim_it)
+				head = cmd_delim_it;
 			demand_program = 0;
 		}
 		else
 		{
-			for (; head != hard_delim_it; head = head->next)
+			for (; head != cmd_delim_it; head = head->next)
 				if (is_special_character_type((int) head->type))
 					ERR_MSRTK(head->str);
 			/* may become null and then outer for loop will do
@@ -490,8 +486,8 @@ int check_process_redirectors(const st_token *head)
 		}
 	}
 	if (demand_program)
-		ERR_MSRTK(head ? head->str : hard_delim_it->str);
-	TRACEL("\n");
+		ERR_MSRTK(head ? head->str : cmd_delim_it->str);
+	TRACEL("Test was passed\n");
 	return MT_OK;
 }
 
@@ -509,6 +505,6 @@ int check_syntax(const st_token *head)
 	if (mt_errno == MT_OK)
 		mt_errno = check_process_redirectors(head);
 
-	TRACEL("mt_errno %d\n", mt_errno);
+	TRACEL("Syntax is right mt_errno %d\n", mt_errno);
 	return mt_errno == MT_OK ? 0 : -1;
 }

@@ -39,29 +39,29 @@ struct st_token
 	st_token *next;
 };
 
-typedef void (*vcallback_t)(st_token *, void *);
-typedef st_token *(*scallback_t)(st_token *, void *);
-typedef int (*icallback_t)(st_token *, void *);
+typedef void (*tkn_vcallback_t)(st_token *, void *);
+typedef st_token *(*tkn_scallback_t)(st_token *, void *);
+typedef int (*tkn_icallback_t)(st_token *, void *);
 
 st_token *st_token_create_empty();
 st_token *st_token_create(const char *str);
-void st_token_delete(st_token *item);
+void st_token_delete(st_token **item);
 void st_token_push_back(st_token **head, st_token *new_item);
 int st_token_remove(st_token **head, st_token *item);
 void st_token_print(const st_token *head, const char *prefix);
-void st_token_clear(st_token *head);
+void st_token_clear(st_token **head);
 void st_token_iterate(const st_token **head, size_t times);
 
-void st_token_traverse(st_token *head, vcallback_t callback, void *userdata);
+void st_token_traverse(st_token *head, tkn_vcallback_t callback, void *userdata);
 void st_token_traverse_range(st_token *head, st_token *tail,
-	vcallback_t callback, void *userdata);
-st_token *st_token_find(st_token *head, scallback_t callback, void *userdata);
+	tkn_vcallback_t callback, void *userdata);
+st_token *st_token_find(st_token *head, tkn_scallback_t callback, void *userdata);
 st_token *st_token_find_range(st_token *head, st_token *tail,
-	scallback_t callback, void *userdata);
-size_t st_token_count(const st_token *head, icallback_t callback,
+	tkn_scallback_t callback, void *userdata);
+size_t st_token_count(const st_token *head, tkn_icallback_t callback,
 	void *userdata);
 size_t st_token_count_range(const st_token *head, const st_token *tail,
-	icallback_t callback, void *userdata);
+	tkn_icallback_t callback, void *userdata);
 
 st_token *st_token_contains(st_token *item, void *type);
 int st_token_compare(st_token *item, void *type);

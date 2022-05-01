@@ -11,7 +11,7 @@ struct st_redirector
 };
 
 st_redirector *st_redirector_create_empty();
-void st_redirector_delete(st_redirector *item);
+void st_redirector_delete(st_redirector **item);
 void st_redirector_print(st_redirector *item);
 
 #endif /* ST_REDIRECTOR_H */
