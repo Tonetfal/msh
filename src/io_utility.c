@@ -62,19 +62,20 @@ void print_argv(char **argv)
 	}
 }
 
-void print_byte(int byte)
+void print_byte(char byte)
 {
-	int i;
-	for (i = 0; i < 8; i++)
+	int i = 0;
+	for (; i < 8; i++)
 		putchar(!!(byte & (1 << i)) + '0');
 }
 
-void print_flags(void *flags, int bytes)
+void print_flags(void *flags, unsigned bytes)
 {
-	int i;
-	char *arr = (char *) malloc(bytes);
+	unsigned i = 0u;
+	char *arr;
+	arr = (char *) malloc(bytes);
 	memcpy(arr, flags, bytes);
-	for (i = 0; i < bytes; i++)
+	for (; i < bytes; i++)
 		print_byte(arr[i]);
 	free(arr);
 }

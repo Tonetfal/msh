@@ -3,7 +3,6 @@
 #include "utility.h"
 #include "log.h"
 
-#include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,39 +10,42 @@
 st_token *st_token_create_empty()
 {
 	static size_t id = 0ul;
-	st_token *node = (st_token *) malloc(sizeof(st_token));
-	node->type = tk_unk;
-	node->id = id;
-	node->str = NULL;
-	node->redir = NULL;
-	node->next = NULL;
+	st_token *item = (st_token *) malloc(sizeof(st_token));
+	ATRACEE(item);
+	item->type = tk_unk;
+	item->id = id;
+	item->str = NULL;
+	item->redir = NULL;
+	item->next = NULL;
 	id++;
-	return node;
+	TRACEL("\n");
+	return item;
 }
 
 st_token *st_token_create(const char *str)
 {
-	st_token *node = NULL;
+	st_token *item = NULL;
 	TRACEE("Passed str [%s]\n", str);
-	node = st_token_create_empty();
+	item = st_token_create_empty();
 	if (!str)
-		return node;
+	{
+		TRACEL("An empty token has been created due null str\n");
+		return item;
+	}
 
-	node->str = strdup(str);
-	TRACEL("Created token ptr %p its str [%s]\n",
-		(void *) node, node->str);
-	return node;
+	item->str = strdup(str);
+	item->redir = st_redirector_create_empty();
+	TRACEL("Created token ptr %p its str [%s]\n", (void *) item, item->str);
+	return item;
 }
 
-void st_token_delete(st_token **item)
+void st_token_delete(st_token **head)
 {
-	LOGFNPP(item);
-	if (item && *item)
-	{
-		FREE_IFEX(&(*item)->str);
-		st_redirector_delete(&(*item)->redir);
-		FREE(*item);
-	}
+	LOGFNPP(head);
+	FREE_IFEX((*head)->str);
+	st_redirector_delete(&(*head)->redir);
+	FREE(*head);
+	TRACEL("\n");
 }
 
 void st_token_push_back(st_token **head, st_token *new_item)
@@ -83,9 +85,7 @@ void st_token_clear(st_token **head)
 	if (*head)
 	{
 		st_token_clear(&(*head)->next);
-		FREE_IFEX(&(*head)->str);
-		/* TODO free redirector ? */
-		FREE(*head);
+		st_token_delete(head);
 	}
 	TRACELC("\n");
 }
@@ -159,9 +159,6 @@ st_token *st_token_contains(st_token *item, void *type)
 
 int st_token_compare(st_token *item, void *type)
 {
-	/* TRACE("st_token_compare() - item->type %d == %d\n", item->type, *(int *) type); */
-	/* return (int) item->type == *(int *) type; */
-	TRACE("item->type %d == %ld\n", item->type, (long) type);
 	return (int) item->type == (long) type;
 }
 

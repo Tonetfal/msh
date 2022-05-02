@@ -21,6 +21,25 @@
 	in check_zombies function.
 */
 
+/*
+	NOTES
+	File redirectors are designed to support multiple I/O, i.e. it'll be
+	possible to change destination not only for stdin, stdout and stderr, but
+	even for non-standard descriptors.
+
+	To redirect a standard I/O stream do:
+    	'prg < src > dest'
+	This will change both stdin and stdout respectively. In case of
+	redirecting stdout the previous syntax will truncate the file, but if
+	appending is required '>>' can be used instead.
+
+	To redirect some other stream following syntax will be possible:
+		'prg 1> stdout_dest 2> stderr_dest 3> dest 4< src'
+	This will change output file descriptors 1, 2, and 3 to files
+	'stdout_dest', 'stderr_dest' and 'dest' respectively, while input file
+	descriptor 4 will be created with file 'src'.
+*/
+
 typedef st_redirector st_file_redirector;
 typedef void (*cmd_vcallback_t)(st_command *, void *);
 typedef st_command *(*cmd_scallback_t)(st_command *, void *);

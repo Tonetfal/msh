@@ -1,3 +1,4 @@
+#include "log.h"
 #include "st_invite_msg.h"
 #include "utility.h"
 
@@ -121,12 +122,9 @@ void st_invite_msg_print(const st_invite_msg *msg)
 
 void st_invite_msg_delete(st_invite_msg **item)
 {
-	if (!item)
-		return;
-	free_if_exists((void *) &(*item)->user);
-	free_if_exists((void *) &(*item)->post_user_text);
-	free_if_exists((void *) &(*item)->abs_path);
-	free_if_exists((void *) &(*item)->post_path_text);
-	free(*item);
-	*item = NULL;
+	FREE_IFEX((*item)->user);
+	FREE_IFEX((*item)->post_user_text);
+	FREE_IFEX((*item)->abs_path);
+	FREE_IFEX((*item)->post_path_text);
+	FREE(*item);
 }

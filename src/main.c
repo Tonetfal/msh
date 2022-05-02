@@ -25,6 +25,8 @@
 		continue; \
 	}
 
+#define FINISH() do { cont = 0; break; } while (0)
+
 void chld_hdl(int s)
 {
 	signal(SIGCHLD, &chld_hdl);
@@ -77,10 +79,7 @@ int main()
 			st_command_pass_ownership(cmds);
 			cmds = NULL;
 			if (execute_commands() == -1)
-			{
-				cont = 0;
-				break;
-			}
+				FINISH();
 
 			st_token_clear(&tokens);
 		}

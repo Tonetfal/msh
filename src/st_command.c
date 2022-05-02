@@ -1,16 +1,16 @@
 #define _XOPEN_SOURCE 500 /* snprintf, usleep */
 #define _DEFAULT_SOURCE /* wait4 */
 
+#include "def.h"
 #include "io_utility.h"
+#include "log.h"
 #include "st_command.h"
 #include "st_dll_string.h"
 #include "st_redirector.h"
 #include "st_token.h"
 #include "tokens_utility.h"
 #include "utility.h"
-#include "log.h"
 
-#include <assert.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -45,13 +45,14 @@
 		} \
 	} while(0)
 #define IS_MAIN_BLOCKING_PROGRAM(cmd) \
-	(!(cmd->flags & (CMD_BG | CMD_PIPED)) && cmd->flags | CMD_BLOCKING)
+	((cmd->flags & CMD_BLOCKING) && !(cmd->flags & (CMD_BG | CMD_PIPED)))
 
 volatile sig_atomic_t continue_main_process = 1;
 volatile sig_atomic_t zombie_guard = 0;
 volatile sig_atomic_t child_start = 0;
-volatile sig_atomic_t child_ready = 0;
+volatile sig_atomic_t ready_children = 0;
 volatile sig_atomic_t blocking_processes = 0;
+int spawned_children = 0;
 char post_execution_msg[16368] = {0};
 pid_t last_main_process = -2;
 st_command *cmds_head = NULL, *recent_cmds = NULL;
@@ -60,8 +61,8 @@ void parent_usr1hdl(int signo)
 {
 	signal(SIGUSR1, &parent_usr1hdl);
 	assert(signo == SIGUSR1);
-	child_ready = 1;
-	TRACE("Got child's signal\n");
+	ready_children++;
+	TRACE("Got child's signal. Ready children '%d'\n", ready_children);
 	UNUSED(signo);
 }
 
@@ -90,7 +91,7 @@ const st_token *find_command_tail(const st_token *head)
 	return head;
 }
 
-size_t count_redirectors(const st_command *cmd)
+size_t count_cmd_redirectors(const st_command *cmd)
 {
 	size_t count = 0ul, i = 0ul;
 	st_redirector **redir = cmd->file_redirectors;
@@ -148,9 +149,9 @@ char *form_command_string(const st_token *head, const st_token *tail)
 	st_token_traverse((st_token *) head, &inc, (void *) &token_c);
 	totlen = tokens_len + token_c;
 	handle_process_redir_presence(head, tail, &tokens_len, &token_c, &totlen);
-	str = (char *) calloc(totlen + 1, sizeof(char));
-	TRACE("tokens_len %lu token_c %lu totlen %lu\n", tokens_len, token_c,
-		totlen);
+	str = (char *) calloc(totlen + 1ul, sizeof(char));
+	TRACE("Allocated %zu bytes for ptr '%p'. tokens_len %zu token_c %zu\n",
+		totlen + 1ul, (void *) str, tokens_len, token_c);
 	app_token_str(str, head, tail);
 	TRACEL("Formed string [%s]\n", str);
 	assert(!str[totlen]);
@@ -167,27 +168,31 @@ void callback_is_arg(st_token *item, void *counter)
 void allocate_arguments_memory(const st_token *head,
 	const st_token *tail, int *argc, char ***argv)
 {
-	TRACEE("head %p tail %p\n", (void *) head, (void *) tail);
+	TRACEE("Head addr '%p' Tail addr '%p'\n", (void *) head, (void *) tail);
+	assert(head && tail && argv);
 	*argc = 0;
 	st_token_traverse_range((st_token *) head, (st_token *) tail,
 		&callback_is_arg, (void *) argc);
 	*argv = (char **) calloc(*argc + 1, sizeof(char *));
-	TRACEL("argc %i allocated bytes %lu\n", *argc,
-		(*argc + 1) * sizeof(char *));
+	TRACEL("Allocated bytes %zu for ptr '%p'. argc %d\n",
+		(*argc + 1) * sizeof(char *), (void *) *argv, *argc);
+	assert(*argv);
 }
 
 void allocate_redirectors_memory(const st_token *head,
-	const st_token *tail, st_command *cmd)
+	const st_token *tail, st_file_redirector ***redir)
 {
 	size_t redir_c;
-	TRACEE("\n");
+	TRACEE("Head addr '%p' Tail addr '%p' Redir '%p' *Redir '%p'\n",
+		(void *) head, (void *) tail, (void *) redir, (void *) *redir);
+	assert(head && tail && redir);
 	redir_c = st_token_count_range(head, tail, &st_token_compare,
 		(void *) file_redirector);
-	cmd->file_redirectors = (st_file_redirector **)
-		calloc(redir_c + 1, sizeof(st_file_redirector *));
-
-	TRACEL("redir_c %lu allocated bytes %lu\n", redir_c,
-		(redir_c + 1) * sizeof(st_file_redirector *));
+	*redir = (st_file_redirector **) calloc(redir_c + 1ul,
+		sizeof(st_file_redirector *));
+	TRACEL("Allocated %zu bytes for ptr '%p'\n", (redir_c + 1ul) *
+		sizeof(st_file_redirector *), (void *) *redir);
+	assert(*redir);
 }
 
 size_t count_commands(const st_token *head)
@@ -210,37 +215,41 @@ size_t count_commands(const st_token *head)
 	return count;
 }
 
-void handle_command_redirector(const st_token *token, st_command *cmd)
+void handle_file_redirector(const st_token *token, st_command *cmd)
 {
-	size_t redir_c = count_redirectors(cmd);
-	st_redirector *redir = token->redir;
-	assert(token->type == file_redirector || token->type == process_redirector);
-	assert(token->next);
-	TRACEE("redir_c %lu\n", redir_c);
-	TRACE("A new file redirector has been added to a command \n\t " \
-		"path [%s] fd %d app %d dir %d\n",
-		redir->path, redir->fd, redir->app, redir->dir);
+	size_t redir_c = count_cmd_redirectors(cmd);
+	st_file_redirector *src = token->redir;
+	TRACEE("Cmd addr '%p' Source addr '%p'\n", (void *) cmd, (void *) src);
+	assert(src && token->type == file_redirector && token->next);
+	TRACE("A new file redirector is about to be added to a command:\n");
+	TRACER("path [%s] fd %d app %d dir %d\n",
+		src->path, src->fd, src->app, src->dir);
 
-	cmd->file_redirectors[redir_c] = redir;
-	cmd->file_redirectors[redir_c + 1] = NULL; /* terminating null */
+	cmd->file_redirectors[redir_c] = st_redirector_dup(src);
 	TRACEL("\n");
 }
 
 void handle_arg(const st_token *token, int *argc, char **argv)
 {
+	TRACEE("\n");
 	argv[*argc] = strdup(token->str);
 	(*argc)++;
+	TRACEL("\n");
 }
 
 void handle_bg_process(st_command *cmd)
 {
+	TRACEE("\n");
 	cmd->flags |= CMD_BG;
 	cmd->flags &= ~CMD_BLOCKING;
+	TRACEL("\n");
 }
 
 void handle_pipe(st_command *cmd)
 {
+	TRACEE("\n");
 	cmd->flags |= CMD_PIPED;
+	TRACEL("\n");
 }
 
 void on_token_handle(const st_token *token, int *argc, char **argv,
@@ -261,7 +270,7 @@ void on_token_handle(const st_token *token, int *argc, char **argv,
 			/* do nothing */
 			break;
 		case file_redirector:
-			handle_command_redirector(token, cmd);
+			handle_file_redirector(token, cmd);
 			break;
 		case process_redirector:
 			handle_pipe(cmd);
@@ -289,19 +298,21 @@ void handle_command_tokens(const st_token *head,
 
 st_command *st_command_create_empty()
 {
-	st_command *cmd = (st_command *) malloc(sizeof(st_command));
-	cmd->cmd_str = NULL;
-	cmd->argc = 0;
-	cmd->argv = NULL;
-	cmd->flags = CMD_BLOCKING;
-	cmd->file_redirectors = NULL;
-	cmd->pipefd[0] = -1;
-	cmd->pipefd[1] = -1;
-	cmd->pid = 0;
-	cmd->eid = 0;
-	cmd->next = NULL;
-	cmd->prev = NULL;
-	return cmd;
+	st_command *item = (st_command *) malloc(sizeof(st_command));
+	ATRACEE(item);
+	item->cmd_str = NULL;
+	item->argc = 0;
+	item->argv = NULL;
+	item->flags = CMD_BLOCKING;
+	item->file_redirectors = NULL;
+	item->pipefd[0] = -1;
+	item->pipefd[1] = -1;
+	item->pid = 0;
+	item->eid = 0;
+	item->next = NULL;
+	item->prev = NULL;
+	TRACEL("\n");
+	return item;
 }
 
 st_command *st_command_create(const st_token *head)
@@ -309,25 +320,32 @@ st_command *st_command_create(const st_token *head)
 	int argc;
 	char **argv;
 	const st_token *tail = find_command_tail(head);
-	st_command *cmd = st_command_create_empty();
+	st_command *item = st_command_create_empty();
+	TRACEE("\n");
 	if (!head)
-		return cmd;
+	{
+		TRACEL("An empty command has been created due null head\n");
+		return item;
+	}
 
 	allocate_arguments_memory(head, tail, &argc, &argv);
-	allocate_redirectors_memory(head, tail, cmd);
-	handle_command_tokens(head, tail, cmd, argv);
+	allocate_redirectors_memory(head, tail, &item->file_redirectors);
+	assert(item->file_redirectors);
+	handle_command_tokens(head, tail, item, argv);
 	assert(!argv[argc]);
 
-	cmd->argc = argc;
-	cmd->argv = argv;
-	cmd->cmd_str = form_command_string(head, tail);
+	item->argc = argc;
+	item->argv = argv;
+	item->cmd_str = form_command_string(head, tail);
 
 #ifdef _TRACE
 	TRACE("New command has been created\n");
-	st_command_print(cmd, TAB);
+	LOGPRINT("\n");
+	st_command_print(item, TAB);
+	LOGPRINT("\n");
 #endif
-
-	return cmd;
+	TRACEL("\n");
+	return item;
 }
 
 st_command *get_tail(st_command *head)
@@ -418,9 +436,7 @@ void st_command_traverse(st_command *cmd, cmd_vcallback_t callback, void *userda
 
 void print_literal_flags(const st_command *cmd)
 {
-#define CONTAINS(var) \
-	if (cmd->flags & (var)) \
-		PRINT("%s ", #var)
+#define CONTAINS(var) if (cmd->flags & (var)) PRINT("%s ", #var)
 
 	CONTAINS(CMD_BG);
 	CONTAINS(CMD_PIPED);
@@ -448,7 +464,7 @@ void st_command_print(const st_command *cmd, const char *prefix)
 
 	P_PRINT("argv: [ \n");
 	for (i = 0ul; cmd->argv[i]; i++)
-		PP_PRINT(STR" - "ADDR",\n", cmd->argv[i], (void *)cmd->argv[i]);
+		PP_PRINT(STR" - "ADDR",\n", cmd->argv[i], (void *) cmd->argv[i]);
 	PP_PRINT(STR"\n", cmd->argv[i]);
 	P_PRINT("]\n");
 
@@ -501,7 +517,8 @@ void st_redirectors_delete(st_redirector ***redirectors)
 	size_t i = 0ul;
 	LOGFNPP(redirectors);
 	for (; (*redirectors)[i]; i++)
-		st_redirector_delete(redirectors[i]);
+		st_redirector_delete(&(*redirectors)[i]);
+	TRACE("Exit for\n");
 	FREE(*redirectors);
 	TRACEL("\n");
 }
@@ -509,7 +526,7 @@ void st_redirectors_delete(st_redirector ***redirectors)
 void st_command_delete(st_command **cmd)
 {
 	LOGFNPP(cmd);
-	FREE_IFEX(&(*cmd)->cmd_str);
+	FREE_IFEX((*cmd)->cmd_str);
 	argv_delete(&(*cmd)->argv);
 	st_redirectors_delete(&(*cmd)->file_redirectors);
 	/* fds are closed in execute_commands */
@@ -716,7 +733,7 @@ void open_pipe(st_command *cmd)
 {
 	int pipefd[2] = {0};
 	TRACEE("\n");
-	if (cmd->flags & CMD_PIPED)
+	if (is_output_piped(cmd))
 	{
 		pipe(pipefd);
 		assert(cmd->next);
@@ -779,14 +796,14 @@ void wait_parent()
 	sigprocmask(SIG_SETMASK, &mask_usr1, NULL);
 	signal(SIGUSR1, &child_usr1hdl);
 	kill(getppid(), SIGUSR1);
-	PTRACE("Signaled parent about readiness");
+	PTRACE("Signaled parent about readiness\n");
 	while (!child_start)
 		sigsuspend(&mask_empty);
 	PTRACE("Got parent's signal\n");
 	PTRACEL("\n");
 }
 
-void wait_child_readiness()
+void wait_children_readiness()
 {
 	sigset_t mask_usr1, mask_empty;
 	TRACEE("\n");
@@ -794,9 +811,11 @@ void wait_child_readiness()
 	sigemptyset(&mask_empty);
 	sigaddset(&mask_usr1, SIGUSR1);
 	sigprocmask(SIG_SETMASK, &mask_usr1, NULL);
-	while (!child_ready)
+	assert(spawned_children >= ready_children);
+	while (spawned_children > ready_children)
 		sigsuspend(&mask_empty);
-	TRACEL("Child is ready\n");
+	TRACEL("Children (%d) are ready\n", spawned_children);
+	spawned_children = ready_children = 0;
 }
 
 pid_t cmd_fork(st_command *cmd)
@@ -828,7 +847,11 @@ pid_t cmd_fork(st_command *cmd)
 
 	assert(!(cmd->flags & CMD_FORKED));
 	cmd->flags |= CMD_FORKED;
-	wait_child_readiness();
+	TRACE("Launched command\n");
+#ifdef _TRACE
+	st_command_print(cmd, TAB);
+#endif
+	spawned_children++;
 
 	TRACEL("\n");
 	return pid;
@@ -859,7 +882,8 @@ void unpause_child(st_command *cmd, void *data)
 
 void unpause_children()
 {
-	TRACEE("\n");
+	TRACEE("Wait children\n");
+	wait_children_readiness();
 	TRACE("Unpause children\n");
 	st_command_traverse(cmds_head, &unpause_child, NULL);
 	TRACEL("\n");
@@ -877,7 +901,9 @@ pid_t handle_process(st_command *cmd)
 	if (cmd->pid == -1)
 	{
 		TRACEL("if pid == -1\n");
-		st_command_delete(&cmd);
+		assert(!"FIX: Clean must be done after all commands have been " \
+			"launched");
+		/* st_command_delete(&cmd); */
 		return 0;
 	}
 	if (cmd->flags & CMD_BLOCKING)
@@ -887,7 +913,7 @@ pid_t handle_process(st_command *cmd)
 	}
 	if (IS_MAIN_BLOCKING_PROGRAM(cmd))
 	{
-		TRACE("continue_main_process = 0\n");
+		TRACE("Command '%s' continue_main_process = 0\n", cmd->cmd_str);
 		last_main_process = pid;
 		continue_main_process = 0;
 
@@ -907,10 +933,7 @@ int execute_commands()
 	TRACEE("\n");
 	for (; recent_cmds; recent_cmds = next)
 	{
-		/*
-			TODO Make commands run until a delim such as ;, && or ||, instead
-			of running them all simultaneously
-		*/
+		res = 0;
 		cmd = recent_cmds;
 		next = cmd->next; /* take it before cmd gets deleted */
 		if (!strcmp(cmd->argv[0], "cd"))
@@ -935,7 +958,9 @@ int execute_commands()
 		}
 	}
 	if (!main_blocking_launched)
-	{ /* unpause all children */ }
+	{
+		unpause_children();
+	}
 	TRACEL("\n");
 	return 0;
 }
@@ -981,6 +1006,8 @@ void handle_blocking(st_command *cmd)
 	decrease_blocking_processes();
 	PTRACE("cmd '%s' Wait cont mprcs (%d) bprcs (%d) zguard (%d)\n",
 		cmd->cmd_str, continue_main_process, blocking_processes, zombie_guard);
+	if (!IS_MAIN_BLOCKING_PROGRAM(cmd))
+		return;
 	WAIT_FOR((!continue_main_process && blocking_processes) || zombie_guard);
 	continue_main_process = 1;
 }

@@ -45,7 +45,7 @@ char *strdup(const char *str)
 	{
 		len = strlen(str) + 1;
 		cpy = (char *) malloc(len);
-		TRACE("%zu bytes were allocated at '%p'\n", len, (void *) cpy);
+		TRACE("Allocated %zu bytes for ptr '%p'\n", len, (void *) cpy);
 		if (cpy)
 			strcpy(cpy, str);
 		TRACE("New string '%s' - '%p'\n", cpy, (void *) cpy);
@@ -59,11 +59,4 @@ size_t argvlen(int argc, char **argv)
 	if (argc == 0)
 		return 0;
 	return argvlen(argc - 1, argv + 1) + strlen(*argv);
-}
-
-void free_if_exists(void **data)
-{
-	LOGFNPP(data);
-	FREE(*data);
-	TRACEL("\n");
 }

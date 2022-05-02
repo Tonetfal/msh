@@ -8,21 +8,28 @@
 
 st_dll_string *st_dll_string_create_empty()
 {
-	st_dll_string *head = (st_dll_string *) malloc(sizeof(st_dll_string));
-	head->str = NULL;
-	head->next = NULL;
-	head->prev = NULL;
-	return head;
+	st_dll_string *item = (st_dll_string *) malloc(sizeof(st_dll_string));
+	ATRACE(item);
+	item->str = NULL;
+	item->next = NULL;
+	item->prev = NULL;
+	TRACEL("\n");
+	return item;
 }
 
 st_dll_string *st_dll_string_create(const char *str)
 {
-	st_dll_string *head = st_dll_string_create_empty();
+	st_dll_string *item = st_dll_string_create_empty();
+	TRACEE("\n");
 	if (!str)
-		return head;
+	{
+		TRACEL("An empty dll string has been created due null str\n");
+		return item;
+	}
 
-	head->str = strdup(str);
-	return head;
+	item->str = strdup(str);
+	TRACEL("\n");
+	return item;
 }
 
 void st_dll_string_push_back(st_dll_string **head, st_dll_string *new_item)
@@ -92,7 +99,7 @@ void st_dll_string_clear(st_dll_string **head)
 	if (*head)
 	{
 		st_dll_string_clear(&(*head)->next);
-		FREE_IFEX(&(*head)->str);
+		FREE_IFEX((*head)->str);
 		FREE(*head);
 	}
 	TRACELC("\n");

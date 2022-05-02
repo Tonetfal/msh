@@ -31,11 +31,11 @@ eid_t acquire_eid()
 
 void release_eid(eid_t eid)
 {
-	TRACEE("Passed EID %d, it'll be decremented by 1\n", eid);
+	TRACEE("Passed EID %d\n", eid);
 	eid--;
 	if (eid < 0 || eid > MAX_EID)
 	{
-		TRACEL("EID %d is out of range [%d, %d]\n", eid, 0, MAX_EID);
+		TRACEL("EID %d is out of range [%d, %d]\n", eid + 1, 1, MAX_EID + 1);
 		return;
 	}
 	available_eids[eid] = 0;

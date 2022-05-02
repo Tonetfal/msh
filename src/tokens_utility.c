@@ -5,7 +5,6 @@
 #include "utility.h"
 #include "log.h"
 
-#include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -240,9 +239,9 @@ void unify_multiple_tokens(st_token *head)
 			continue;
 		if (can_be_unified(head) && can_be_unified(head->next))
 		{
-			TRACE("Unify %s with %s\n",
-				head->str, head->next->str);
+			TRACE("Unify %s with %s\n", head->str, head->next->str);
 			head->str = (char *) malloc(3);
+			TRACE("Allocated 3 bytes for ptr '%p'\n", head->str);
 			head->str[0] = *head->str;
 			head->str[1] = *head->next->str;
 			head->str[2] = '\0';
@@ -303,7 +302,8 @@ void analyze_redirector(const char *str, int *fd, int *app, void *dir_v)
 
 void setup_redirector(st_token *item)
 {
-	st_redirector *redir = st_redirector_create_empty();
+	st_redirector *redir = item->redir;
+	assert(redir);
 
 	/* use 'if' instead of 'assert' because syntax control is not yet done */
 	if (item->next)
@@ -464,7 +464,8 @@ int check_process_redirectors(const st_token *head)
 	TRACEE("\n");
 	for (; head; head = head->next)
 	{
-		cmd_delim_it = find_cmd_delim(head);
+		TRACE("Token: '%s' Demand prg: '%d'\n", head->str, demand_program);
+		cmd_delim_it = find_cmd_delim(head); /* ; | & */
 		if (!cmd_delim_it || (int) cmd_delim_it->type != process_redirector)
 		{
 			found_prg = !!st_token_find_range((st_token *) head,
@@ -477,11 +478,7 @@ int check_process_redirectors(const st_token *head)
 		}
 		else
 		{
-			for (; head != cmd_delim_it; head = head->next)
-				if (is_special_character_type((int) head->type))
-					ERR_MSRTK(head->str);
-			/* may become null and then outer for loop will do
-			   head = head->next and cause a segm fault*/
+			head = cmd_delim_it;
 			demand_program = 1;
 		}
 	}
