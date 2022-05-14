@@ -5,10 +5,10 @@
 
 struct st_invite_msg
 {
-	char *user;
-	char *post_user_text;
-	char *abs_path;
-	char *post_path_text;
+    char *user;
+    char *post_user_text;
+    char *abs_path;
+    char *post_path_text;
 };
 
 st_invite_msg *st_invite_msg_create_empty();

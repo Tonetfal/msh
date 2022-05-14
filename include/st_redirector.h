@@ -5,9 +5,9 @@
 
 struct st_redirector
 {
-	int fd, app;
-	char *path;
-	enum { rd_in, rd_out, rd_ukw } dir;
+    int fd, app;
+    char *path;
+    enum { rd_in, rd_out, rd_ukw } dir;
 };
 
 st_redirector *st_redirector_create_empty();

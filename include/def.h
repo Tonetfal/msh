@@ -6,8 +6,8 @@
 #define SHELL "msh"
 #define UNUSED(x) (void) (x) /* ignore warning */
 #define FWD(STRUCT) \
-	struct STRUCT; \
-	typedef struct STRUCT STRUCT;
+    struct STRUCT; \
+    typedef struct STRUCT STRUCT;
 
 FWD(st_command)
 FWD(st_dll_string)

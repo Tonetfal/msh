@@ -5,7 +5,7 @@
 
 /*
  * Functions to analyze user's inputs
-*/
+ */
 
 int is_cmd_delim(const st_token *item);
 st_token *find_cmd_delim(const st_token *head);
@@ -14,6 +14,5 @@ void remove_quotes(st_token **head);
 void unify_multiple_tokens(st_token *head);
 void analyze_token_types(st_token *head);
 int check_syntax(const st_token *head);
-/* void st_token_determine_type(st_token *item); */
 
 #endif /* !TOKENS_UTILITY_H */
